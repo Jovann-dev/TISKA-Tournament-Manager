@@ -52,6 +52,24 @@ class _TournamentAccessScreenState extends State<TournamentAccessScreen> {
     }
   }
 
+  String _friendlyErrorMessage(Object error) {
+    final message = error.toString()
+        .replaceFirst('Exception: ', '')
+        .replaceFirst('StateError: ', '');
+
+    final lowerMessage = message.toLowerCase();
+    if (lowerMessage.contains('clientexception') ||
+        lowerMessage.contains('failed to fetch') ||
+        lowerMessage.contains('fetch') ||
+        lowerMessage.contains('permission') ||
+        lowerMessage.contains('row level security') ||
+        lowerMessage.contains('does not exist')) {
+      return 'The shared tournament database is not configured yet. Create the Supabase tables and row-level policies, then try again.';
+    }
+
+    return message;
+  }
+
   Future<void> _openTournament({required bool createNewTournament}) async {
     final tournamentId = _tournamentIdController.text.trim();
     final password = _passwordController.text.trim();
@@ -111,7 +129,7 @@ class _TournamentAccessScreenState extends State<TournamentAccessScreen> {
         return;
       }
       setState(() {
-        _errorMessage = error.toString().replaceFirst('Exception: ', '').replaceFirst('StateError: ', '');
+        _errorMessage = _friendlyErrorMessage(error);
       });
     } finally {
       if (mounted) {
