@@ -40,17 +40,25 @@ class TournamentBackend {
       return <String, dynamic>{};
     }
 
-    return Map<String, dynamic>.from(response);
+    final payload = response['snapshot'];
+    if (payload is! Map) {
+      return <String, dynamic>{};
+    }
+
+    return Map<String, dynamic>.from(payload);
   }
 
   Future<void> saveTournamentSnapshot(
     String tournamentId,
     Map<String, dynamic> snapshot,
   ) async {
+    final payload = Map<String, dynamic>.from(snapshot);
+    payload['updated_at'] = DateTime.now().toUtc().toIso8601String();
+
     await _client.from('tournaments').upsert({
       'id': tournamentId,
-      'snapshot': snapshot,
-      'updated_at': DateTime.now().toUtc().toIso8601String(),
+      'snapshot': payload,
+      'updated_at': payload['updated_at'],
     });
   }
 }

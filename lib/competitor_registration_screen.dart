@@ -200,9 +200,14 @@ class _CompetitorRegistrationScreenState
   }
 
   Future<void> _importXlsx() async {
+    if (!mounted) {
+      return;
+    }
+
     setState(() {
       isSubmitting = true;
     });
+
     try {
       final file = await openFile(
         acceptedTypeGroups: const [
@@ -219,11 +224,32 @@ class _CompetitorRegistrationScreenState
         return;
       }
 
+      final fileName = file.name.toLowerCase();
+      if (!fileName.endsWith('.xlsx')) {
+        if (!mounted) {
+          return;
+        }
+        setState(() {
+          isSubmitting = false;
+        });
+        _showMessage('Please choose a valid XLSX file.');
+        return;
+      }
+
       final workbook = Excel.decodeBytes(await file.readAsBytes());
-      final table = workbook.tables.values.cast<Sheet?>().firstWhere(
-        (sheet) => sheet != null,
-        orElse: () => null,
-      );
+      final sheetValues = workbook.tables.values.toList();
+      if (sheetValues.isEmpty) {
+        if (!mounted) {
+          return;
+        }
+        setState(() {
+          isSubmitting = false;
+        });
+        _showMessage('No worksheet found in XLSX file.');
+        return;
+      }
+
+      final table = sheetValues.isNotEmpty ? sheetValues.first : null;
       if (table == null) {
         if (!mounted) {
           return;

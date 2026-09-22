@@ -33,6 +33,7 @@ class TournamentRepository {
   final Map<String, int> _tatamiJudgeCounts = <String, int>{};
   final TournamentBackend _backend = TournamentBackend();
   Timer? _remoteSyncTimer;
+  DateTime? _lastLocalUpdatedAt;
   List<String> _tatamiOrder = const <String>[];
 
   bool _initialized = false;
@@ -688,6 +689,13 @@ class TournamentRepository {
         if (remoteSnapshot.isEmpty) {
           return;
         }
+
+        final remoteUpdatedAt = _snapshotUpdatedAt(remoteSnapshot);
+        if (_lastLocalUpdatedAt != null && remoteUpdatedAt != null &&
+            !remoteUpdatedAt.isAfter(_lastLocalUpdatedAt!)) {
+          return;
+        }
+
         if (_initialized) {
           _applySnapshot(remoteSnapshot);
           _emitCompetitors();
@@ -702,6 +710,14 @@ class TournamentRepository {
         // break the local tournament flow.
       }
     });
+  }
+
+  DateTime? _snapshotUpdatedAt(Map<String, dynamic> snapshot) {
+    final raw = snapshot['updated_at'];
+    if (raw is! String || raw.trim().isEmpty) {
+      return null;
+    }
+    return DateTime.tryParse(raw)?.toUtc();
   }
 
   void _applySnapshot(Map<String, dynamic> snapshot) {
@@ -799,11 +815,14 @@ class TournamentRepository {
     if (snapshot == null) {
       return;
     }
+    _lastLocalUpdatedAt = _snapshotUpdatedAt(snapshot);
     _applySnapshot(snapshot);
   }
 
   Future<void> _persist() async {
+    final timestamp = DateTime.now().toUtc().toIso8601String();
     final snapshot = <String, Object?>{
+      'updated_at': timestamp,
       'competitors': _competitors
           .map(
             (competitor) => <String, Object?>{
@@ -839,6 +858,7 @@ class TournamentRepository {
           .toList(),
     };
 
+    _lastLocalUpdatedAt = DateTime.parse(timestamp).toUtc();
     await _localStore.saveSnapshot(snapshot, tournamentId: tournamentId);
     if (tournamentId.trim().isNotEmpty) {
       await _backend.saveTournamentSnapshot(tournamentId, snapshot);

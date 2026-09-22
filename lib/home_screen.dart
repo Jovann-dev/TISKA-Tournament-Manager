@@ -2,7 +2,6 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:file_selector/file_selector.dart';
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:screenshot/screenshot.dart';
 
@@ -11,6 +10,7 @@ import 'draw_sheet_screen.dart';
 import 'division_registration_screen.dart';
 import 'tatami_configuration_screen.dart';
 import 'tatami_screen.dart';
+import 'tournament_access_screen.dart';
 import 'tournament_results_screen.dart';
 import 'tournament_models.dart';
 import 'tournament_repository.dart';
@@ -280,21 +280,16 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Future<void> _closeApp() async {
-    if (kIsWeb) {
-      if (!mounted) {
-        return;
-      }
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Close is not supported in web builds.')),
-      );
+    if (!mounted) {
       return;
     }
 
-    if (Platform.isWindows || Platform.isLinux || Platform.isMacOS) {
-      exit(0);
-    }
-
-    exit(0);
+    Navigator.of(context).pushAndRemoveUntil(
+      MaterialPageRoute<void>(
+        builder: (BuildContext context) => const TournamentAccessScreen(),
+      ),
+      (Route<dynamic> route) => false,
+    );
   }
 
   Future<int> _exportDrawSheetImagesToFolder(String folderPath) async {
