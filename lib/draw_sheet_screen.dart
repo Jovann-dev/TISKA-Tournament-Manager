@@ -1129,23 +1129,14 @@ class _DrawSheetModel {
     required CompetitionType competitionType,
   }) {
     if (competitionType == CompetitionType.jiyuKumite) {
-      final isA = competitorId == record.competitorAId;
-      final points = isA ? record.competitorAPoints : record.competitorBPoints;
-      final warnings = isA
-          ? record.competitorAWarningStage
-          : record.competitorBWarningStage;
-      final events = record.events
+      final symbols = record.events
           .where((event) => event.competitorId == competitorId)
-          .map((event) => 'P${event.period}${event.shortLabel}')
+          .map((event) => event.shortLabel)
           .toList();
-      final segments = <String>[
-        'Pts ${points ?? 0}',
-        'Warn ${_warningStageLabel(warnings)}',
-      ];
-      if (events.isNotEmpty) {
-        segments.add(events.join(' '));
+      if (symbols.isEmpty) {
+        return null;
       }
-      return segments.join(' | ');
+      return symbols.join(' ');
     }
 
     final isFlagStyle =
@@ -1159,19 +1150,6 @@ class _DrawSheetModel {
       }
     }
     return null;
-  }
-
-  static String _warningStageLabel(int? stage) {
-    switch (stage) {
-      case 1:
-        return 'Keikoku';
-      case 2:
-        return 'Chui';
-      case 3:
-        return 'Hansoku';
-      default:
-        return '-';
-    }
   }
 
   static String _displayRoundLabel(String label) {

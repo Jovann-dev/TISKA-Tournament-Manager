@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import 'competition_execution_screen.dart';
@@ -7,10 +9,10 @@ import 'live_match_state.dart';
 import 'tournament_models.dart';
 
 class TatamiScreen extends StatefulWidget {
-  final List<TatamiDefinition> tatamiDefinitions;
-  final List<Division> divisions;
-  final List<Competitor> competitors;
-  final Map<String, List<TatamiLogEntry>> tatamiLogs;
+  final Stream<List<TatamiDefinition>> Function() watchTatamiDefinitions;
+  final Stream<List<Division>> Function() watchDivisions;
+  final Stream<List<Competitor>> Function() watchCompetitors;
+  final Stream<Map<String, List<TatamiLogEntry>>> Function() watchTatamiLogs;
   final Future<void> Function(String tatamiName, String? divisionId) onAssign;
   final Future<void> Function(String divisionId) onDeleteDivision;
   final Future<void> Function(String tatamiName, String divisionId)
@@ -30,13 +32,19 @@ class TatamiScreen extends StatefulWidget {
   })
   onSaveExecutionState;
   final void Function(LiveMatchState state) onPublishLiveState;
+  final Future<void> Function(
+    String tatamiName,
+    String divisionId,
+    DivisionInProgressMatch? inProgressMatch,
+  )
+  onSaveInProgressMatch;
 
   const TatamiScreen({
     super.key,
-    required this.tatamiDefinitions,
-    required this.divisions,
-    required this.competitors,
-    required this.tatamiLogs,
+    required this.watchTatamiDefinitions,
+    required this.watchDivisions,
+    required this.watchCompetitors,
+    required this.watchTatamiLogs,
     required this.onAssign,
     required this.onDeleteDivision,
     required this.onStartDivision,
@@ -45,6 +53,7 @@ class TatamiScreen extends StatefulWidget {
     required this.onUpdateJudgeCount,
     required this.onSaveExecutionState,
     required this.onPublishLiveState,
+    required this.onSaveInProgressMatch,
   });
 
   @override
@@ -55,13 +64,22 @@ class _TatamiScreenState extends State<TatamiScreen> {
   final Set<String> _updatingTatamis = <String>{};
   bool _isDeletingDivision = false;
   late String selectedTatamiName;
-  late List<Division> _divisions;
+  List<TatamiDefinition> _tatamiDefinitions = const <TatamiDefinition>[];
+  List<Division> _divisions = const <Division>[];
+  List<Competitor> _competitors = const <Competitor>[];
+  Map<String, List<TatamiLogEntry>> _tatamiLogs =
+      const <String, List<TatamiLogEntry>>{};
+  StreamSubscription<List<TatamiDefinition>>? _tatamiDefinitionsSubscription;
+  StreamSubscription<List<Division>>? _divisionsSubscription;
+  StreamSubscription<List<Competitor>>? _competitorsSubscription;
+  StreamSubscription<Map<String, List<TatamiLogEntry>>>?
+  _tatamiLogsSubscription;
 
   List<String> get _tatamiNames =>
-      widget.tatamiDefinitions.map((definition) => definition.name).toList();
+      _tatamiDefinitions.map((definition) => definition.name).toList();
 
   TatamiDefinition get _selectedTatamiDefinition {
-    return widget.tatamiDefinitions.firstWhere(
+    return _tatamiDefinitions.firstWhere(
       (definition) => definition.name == selectedTatamiName,
       orElse: () => const TatamiDefinition(name: 'Tatami 1', judgesCount: 5),
     );
@@ -95,24 +113,46 @@ class _TatamiScreenState extends State<TatamiScreen> {
   @override
   void initState() {
     super.initState();
-    selectedTatamiName = widget.tatamiDefinitions.isEmpty
-        ? ''
-        : widget.tatamiDefinitions.first.name;
-    _divisions = List<Division>.from(widget.divisions);
+    selectedTatamiName = '';
+    _tatamiDefinitionsSubscription = widget.watchTatamiDefinitions().listen((
+      definitions,
+    ) {
+      setState(() {
+        _tatamiDefinitions = definitions;
+        if (selectedTatamiName.isEmpty ||
+            !_tatamiNames.contains(selectedTatamiName)) {
+          selectedTatamiName = definitions.isEmpty
+              ? ''
+              : definitions.first.name;
+        }
+      });
+    });
+    _divisionsSubscription = widget.watchDivisions().listen((divisions) {
+      setState(() {
+        _divisions = divisions;
+      });
+    });
+    _competitorsSubscription = widget.watchCompetitors().listen((
+      competitors,
+    ) {
+      setState(() {
+        _competitors = competitors;
+      });
+    });
+    _tatamiLogsSubscription = widget.watchTatamiLogs().listen((logs) {
+      setState(() {
+        _tatamiLogs = logs;
+      });
+    });
   }
 
   @override
-  void didUpdateWidget(covariant TatamiScreen oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (widget.tatamiDefinitions.isEmpty) {
-      return;
-    }
-    if (!_tatamiNames.contains(selectedTatamiName)) {
-      setState(() {
-        selectedTatamiName = widget.tatamiDefinitions.first.name;
-      });
-    }
-    _divisions = List<Division>.from(widget.divisions);
+  void dispose() {
+    _tatamiDefinitionsSubscription?.cancel();
+    _divisionsSubscription?.cancel();
+    _competitorsSubscription?.cancel();
+    _tatamiLogsSubscription?.cancel();
+    super.dispose();
   }
 
   void _replaceDivision(Division updatedDivision) {
@@ -120,22 +160,26 @@ class _TatamiScreenState extends State<TatamiScreen> {
       (division) => division.id == updatedDivision.id,
     );
     setState(() {
+      final updated = List<Division>.from(_divisions);
       if (index == -1) {
-        _divisions.add(updatedDivision);
+        updated.add(updatedDivision);
       } else {
-        _divisions[index] = updatedDivision;
+        updated[index] = updatedDivision;
       }
+      _divisions = updated;
     });
   }
 
   void _removeDivisionLocally(String divisionId) {
     setState(() {
-      _divisions.removeWhere((division) => division.id == divisionId);
+      _divisions = _divisions
+          .where((division) => division.id != divisionId)
+          .toList();
     });
   }
 
   List<Competitor> _divisionCompetitors(Division division) {
-    final divisionCompetitors = widget.competitors
+    final divisionCompetitors = _competitors
         .where((competitor) => division.competitorIds.contains(competitor.id))
         .toList();
     divisionCompetitors.sort(
@@ -303,6 +347,7 @@ class _TatamiScreenState extends State<TatamiScreen> {
           onCompleteDivision: widget.onCompleteDivision,
           onSaveExecutionState: widget.onSaveExecutionState,
           onPublishLiveState: widget.onPublishLiveState,
+          onSaveInProgressMatch: widget.onSaveInProgressMatch,
         ),
       ),
     );
@@ -338,7 +383,7 @@ class _TatamiScreenState extends State<TatamiScreen> {
 
   void _showTatamiLog() {
     final logEntries =
-        widget.tatamiLogs[selectedTatamiName] ?? const <TatamiLogEntry>[];
+        _tatamiLogs[selectedTatamiName] ?? const <TatamiLogEntry>[];
     showDialog<void>(
       context: context,
       builder: (context) {
@@ -384,7 +429,7 @@ class _TatamiScreenState extends State<TatamiScreen> {
 
   @override
   Widget build(BuildContext context) {
-    if (widget.tatamiDefinitions.isEmpty) {
+    if (_tatamiDefinitions.isEmpty) {
       return Scaffold(
         appBar: AppBar(title: const Text('Manage Competition')),
         body: const Center(
@@ -450,7 +495,7 @@ class _TatamiScreenState extends State<TatamiScreen> {
                                     ),
                                     const SizedBox(height: 2),
                                     Text(
-                                      'Tatamis: ${widget.tatamiDefinitions.length} | Active/Queued: ${queuedOrRunning.length} | Completed: ${completed.length}',
+                                      'Tatamis: ${_tatamiDefinitions.length} | Active/Queued: ${queuedOrRunning.length} | Completed: ${completed.length}',
                                       style: Theme.of(context)
                                           .textTheme
                                           .bodyMedium,

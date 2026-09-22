@@ -358,6 +358,7 @@ class Division {
   final int? priorityBoostedAt;
   final List<DivisionMatchRecord> matchRecords;
   final List<DivisionPlacement> placements;
+  final DivisionInProgressMatch? inProgressMatch;
 
   const Division({
     required this.id,
@@ -376,6 +377,7 @@ class Division {
     this.priorityBoostedAt,
     this.matchRecords = const <DivisionMatchRecord>[],
     this.placements = const <DivisionPlacement>[],
+    this.inProgressMatch,
   });
 
   Division copyWith({
@@ -395,6 +397,7 @@ class Division {
     Object? priorityBoostedAt = _unset,
     List<DivisionMatchRecord>? matchRecords,
     List<DivisionPlacement>? placements,
+    Object? inProgressMatch = _unset,
   }) {
     return Division(
       id: id ?? this.id,
@@ -419,6 +422,9 @@ class Division {
           : priorityBoostedAt as int?,
       matchRecords: matchRecords ?? this.matchRecords,
       placements: placements ?? this.placements,
+      inProgressMatch: identical(inProgressMatch, _unset)
+          ? this.inProgressMatch
+          : inProgressMatch as DivisionInProgressMatch?,
     );
   }
 
@@ -469,6 +475,7 @@ class Division {
       'priorityBoostedAt': priorityBoostedAt,
       'matchRecords': matchRecords.map((record) => record.toMap()).toList(),
       'placements': placements.map((placement) => placement.toMap()).toList(),
+      'inProgressMatch': inProgressMatch?.toMap(),
     };
   }
 
@@ -498,6 +505,11 @@ class Division {
           .whereType<Map<String, dynamic>>()
           .map(DivisionPlacement.fromMap)
           .toList(),
+      inProgressMatch: map['inProgressMatch'] == null
+          ? null
+          : DivisionInProgressMatch.fromMap(
+              Map<String, dynamic>.from(map['inProgressMatch'] as Map),
+            ),
     );
   }
 }
@@ -609,6 +621,62 @@ class DivisionPlacement {
       placeLabel: (map['placeLabel'] as String?) ?? '',
       competitorIds: ((map['competitorIds'] as List<dynamic>?) ?? <dynamic>[])
           .whereType<String>()
+          .toList(),
+    );
+  }
+}
+
+/// Snapshot of an unfinished jiyu kumite match (points/warnings/timer/events)
+/// persisted so it survives leaving and re-entering the execution screen.
+class DivisionInProgressMatch {
+  final String matchId;
+  final int competitorAPoints;
+  final int competitorBPoints;
+  final int competitorAWarningStage;
+  final int competitorBWarningStage;
+  final int period;
+  final int timerRemainingSeconds;
+  final List<DivisionMatchEventRecord> events;
+
+  const DivisionInProgressMatch({
+    required this.matchId,
+    this.competitorAPoints = 0,
+    this.competitorBPoints = 0,
+    this.competitorAWarningStage = 0,
+    this.competitorBWarningStage = 0,
+    this.period = 1,
+    this.timerRemainingSeconds = 0,
+    this.events = const <DivisionMatchEventRecord>[],
+  });
+
+  Map<String, Object?> toMap() {
+    return <String, Object?>{
+      'matchId': matchId,
+      'competitorAPoints': competitorAPoints,
+      'competitorBPoints': competitorBPoints,
+      'competitorAWarningStage': competitorAWarningStage,
+      'competitorBWarningStage': competitorBWarningStage,
+      'period': period,
+      'timerRemainingSeconds': timerRemainingSeconds,
+      'events': events.map((event) => event.toMap()).toList(),
+    };
+  }
+
+  static DivisionInProgressMatch fromMap(Map<String, dynamic> map) {
+    return DivisionInProgressMatch(
+      matchId: (map['matchId'] as String?) ?? '',
+      competitorAPoints: (map['competitorAPoints'] as num?)?.toInt() ?? 0,
+      competitorBPoints: (map['competitorBPoints'] as num?)?.toInt() ?? 0,
+      competitorAWarningStage:
+          (map['competitorAWarningStage'] as num?)?.toInt() ?? 0,
+      competitorBWarningStage:
+          (map['competitorBWarningStage'] as num?)?.toInt() ?? 0,
+      period: (map['period'] as num?)?.toInt() ?? 1,
+      timerRemainingSeconds:
+          (map['timerRemainingSeconds'] as num?)?.toInt() ?? 0,
+      events: ((map['events'] as List<dynamic>?) ?? <dynamic>[])
+          .whereType<Map<String, dynamic>>()
+          .map(DivisionMatchEventRecord.fromMap)
           .toList(),
     );
   }

@@ -19,6 +19,7 @@ class LiveMatchState {
   final int timerTotalSeconds;
   final int timerRemainingSeconds;
   final bool timerRunning;
+  final int? timerEndsAtMillis;
   final int period;
   final int competitorAPoints;
   final int competitorBPoints;
@@ -43,6 +44,7 @@ class LiveMatchState {
     this.timerTotalSeconds = 0,
     this.timerRemainingSeconds = 0,
     this.timerRunning = false,
+    this.timerEndsAtMillis,
     this.period = 1,
     this.competitorAPoints = 0,
     this.competitorBPoints = 0,

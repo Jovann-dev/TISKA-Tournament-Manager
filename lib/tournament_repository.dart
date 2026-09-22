@@ -460,6 +460,27 @@ class TournamentRepository {
     return _saveDivisionAndAssignment(division);
   }
 
+  /// Persists (or clears, when null) the currently unfinished match's
+  /// points/warnings/timer/events so they survive leaving and re-entering
+  /// the execution screen.
+  Future<void> saveDivisionInProgressMatch(
+    String tatamiName,
+    String divisionId,
+    DivisionInProgressMatch? inProgressMatch,
+  ) async {
+    final divisionIndex = _divisions.indexWhere(
+      (item) => item.id == divisionId,
+    );
+    if (divisionIndex == -1) {
+      return;
+    }
+    _divisions[divisionIndex] = _divisions[divisionIndex].copyWith(
+      inProgressMatch: inProgressMatch,
+    );
+    _emitDivisions();
+    await _persist();
+  }
+
   Future<void> saveDivisionExecutionState(
     String tatamiName,
     String divisionId, {

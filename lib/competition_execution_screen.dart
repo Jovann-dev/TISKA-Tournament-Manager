@@ -26,6 +26,12 @@ class CompetitionExecutionScreen extends StatefulWidget {
   })
   onSaveExecutionState;
   final void Function(LiveMatchState state) onPublishLiveState;
+  final Future<void> Function(
+    String tatamiName,
+    String divisionId,
+    DivisionInProgressMatch? inProgressMatch,
+  )
+  onSaveInProgressMatch;
 
   const CompetitionExecutionScreen({
     super.key,
@@ -38,6 +44,7 @@ class CompetitionExecutionScreen extends StatefulWidget {
     required this.onCompleteDivision,
     required this.onSaveExecutionState,
     required this.onPublishLiveState,
+    required this.onSaveInProgressMatch,
   });
 
   @override
@@ -73,6 +80,7 @@ class _CompetitionExecutionScreenState
   Timer? _jiyuTimer;
   final List<DivisionMatchEventRecord> _jiyuEvents =
       <DivisionMatchEventRecord>[];
+  DivisionInProgressMatch? _pendingHydrateInProgress;
 
   @override
   void initState() {
@@ -86,6 +94,7 @@ class _CompetitionExecutionScreenState
     };
     _plan = _CompetitionPlan.build(_planCompetitors);
     _results.addAll(_hydrateRecordedMatches(widget.division.matchRecords));
+    _pendingHydrateInProgress = widget.division.inProgressMatch;
     _prepareCompetition();
   }
 
@@ -146,8 +155,9 @@ class _CompetitionExecutionScreenState
     if (!mounted) {
       return;
     }
+    // Note: _autoReusePreviousResults already prepared the jiyu state (and
+    // hydrated any saved in-progress match); don't force-reset it again here.
     setState(() {
-      _prepareJiyuStateForCurrentMatch(force: true);
       _initializing = false;
     });
     _publishLiveState();
@@ -266,12 +276,41 @@ class _CompetitionExecutionScreenState
         timerTotalSeconds: _jiyuBaseDuration.inSeconds,
         timerRemainingSeconds: _jiyuTimeRemaining.inSeconds,
         timerRunning: _jiyuTimerRunning,
+        timerEndsAtMillis: _jiyuTimerEndsAt?.millisecondsSinceEpoch,
         period: _jiyuPeriod,
         competitorAPoints: _jiyuAPoints,
         competitorBPoints: _jiyuBPoints,
         competitorAWarningStage: _jiyuAWarningStage,
         competitorBWarningStage: _jiyuBWarningStage,
         updatedAt: DateTime.now().millisecondsSinceEpoch,
+      ),
+    );
+  }
+
+  /// Saves the unfinished jiyu kumite match's points/warnings/timer/events so
+  /// they are not lost if the organizer leaves this screen before recording
+  /// the match. Not called on every timer tick to avoid excessive writes.
+  void _persistInProgressMatch() {
+    if (!_isJiyuKumite) {
+      return;
+    }
+    final currentMatch = _currentMatch;
+    unawaited(
+      widget.onSaveInProgressMatch(
+        widget.tatamiName,
+        widget.division.id,
+        currentMatch == null
+            ? null
+            : DivisionInProgressMatch(
+                matchId: currentMatch.match.id,
+                competitorAPoints: _jiyuAPoints,
+                competitorBPoints: _jiyuBPoints,
+                competitorAWarningStage: _jiyuAWarningStage,
+                competitorBWarningStage: _jiyuBWarningStage,
+                period: _jiyuPeriod,
+                timerRemainingSeconds: _jiyuTimeRemaining.inSeconds,
+                events: List<DivisionMatchEventRecord>.from(_jiyuEvents),
+              ),
       ),
     );
   }
@@ -330,6 +369,26 @@ class _CompetitionExecutionScreenState
     _jiyuTimeRemaining = _jiyuBaseDuration;
     _jiyuTimerExpired = false;
     _resetJiyuState();
+
+    final pending = _pendingHydrateInProgress;
+    _pendingHydrateInProgress = null;
+    if (pending != null && pending.matchId == currentMatch.match.id) {
+      _jiyuAPoints = pending.competitorAPoints;
+      _jiyuBPoints = pending.competitorBPoints;
+      _jiyuAWarningStage = pending.competitorAWarningStage;
+      _jiyuBWarningStage = pending.competitorBWarningStage;
+      _jiyuPeriod = pending.period;
+      _jiyuEvents
+        ..clear()
+        ..addAll(pending.events);
+      final restoredRemaining = Duration(
+        seconds: pending.timerRemainingSeconds,
+      );
+      _jiyuTimeRemaining = restoredRemaining > Duration.zero
+          ? restoredRemaining
+          : _jiyuBaseDuration;
+      _jiyuTimerExpired = _jiyuTimeRemaining <= Duration.zero;
+    }
   }
 
   String _formatDuration(Duration duration) {
@@ -384,6 +443,7 @@ class _CompetitionExecutionScreenState
       _jiyuTimerExpired = false;
     });
     _publishLiveState();
+    _persistInProgressMatch();
   }
 
   void _pauseJiyuTimer() {
@@ -399,6 +459,7 @@ class _CompetitionExecutionScreenState
       }
     });
     _publishLiveState();
+    _persistInProgressMatch();
   }
 
   void _resetJiyuTimerOnly() {
@@ -408,6 +469,7 @@ class _CompetitionExecutionScreenState
       _jiyuTimerExpired = false;
     });
     _publishLiveState();
+    _persistInProgressMatch();
   }
 
   void _resetJiyuScoreAndWarnings() {
@@ -416,6 +478,7 @@ class _CompetitionExecutionScreenState
       _jiyuEvents.removeWhere((event) => event.period == _jiyuPeriod);
     });
     _publishLiveState();
+    _persistInProgressMatch();
   }
 
   void _startOvertimePeriod() {
@@ -431,6 +494,7 @@ class _CompetitionExecutionScreenState
       _jiyuTimerExpired = false;
     });
     _publishLiveState();
+    _persistInProgressMatch();
   }
 
   Future<Competitor?> _promptManualJiyuWinner(
@@ -588,6 +652,7 @@ class _CompetitionExecutionScreenState
       }
     });
     _publishLiveState();
+    _persistInProgressMatch();
 
     final winnerByWarning = _jiyuAWarningStage >= 3
         ? currentMatch.competitorB
@@ -639,6 +704,7 @@ class _CompetitionExecutionScreenState
       _prepareJiyuStateForCurrentMatch(force: true);
     });
     _publishLiveState();
+    _persistInProgressMatch();
     final enteredSummary =
         '${currentMatch.match.roundLabel} recorded: '
         '${winner.number} ${winner.name} defeated ${loser.number} ${loser.name}.';
@@ -922,6 +988,7 @@ class _CompetitionExecutionScreenState
         _prepareJiyuStateForCurrentMatch(force: true);
       });
       _publishLiveState();
+      _persistInProgressMatch();
 
       await _autoReusePreviousResults(
         initialLogMessage:
@@ -1046,6 +1113,7 @@ class _CompetitionExecutionScreenState
       _prepareJiyuStateForCurrentMatch(force: true);
     });
     _publishLiveState();
+    _persistInProgressMatch();
     await widget.onSaveExecutionState(
       widget.tatamiName,
       widget.division.id,
@@ -1227,6 +1295,11 @@ class _CompetitionExecutionScreenState
         logMessage: 'Competition finished with final placements recorded.',
       );
       await widget.onCompleteDivision(widget.tatamiName, widget.division.id);
+      await widget.onSaveInProgressMatch(
+        widget.tatamiName,
+        widget.division.id,
+        null,
+      );
       if (!mounted) {
         return;
       }
@@ -1280,6 +1353,7 @@ class _CompetitionExecutionScreenState
 
   @override
   void dispose() {
+    _persistInProgressMatch();
     _disposeJiyuTimer();
     super.dispose();
   }
@@ -1818,15 +1892,12 @@ class _JiyuKumiteEditor extends StatelessWidget {
     return currentStage == targetStage - 1;
   }
 
-  List<String> _eventsFor(String competitorId, {int? period}) {
+  /// Same chronological symbol sequence used in the draw sheet subscripts.
+  String _symbolsFor(String competitorId) {
     return events
-        .where(
-          (event) =>
-              event.competitorId == competitorId &&
-              (period == null || event.period == period),
-        )
-        .map((event) => 'P${event.period}:${event.shortLabel}')
-        .toList();
+        .where((event) => event.competitorId == competitorId)
+        .map((event) => event.shortLabel)
+        .join(' ');
   }
 
   Widget _buildCompetitorBlock(
@@ -1903,17 +1974,12 @@ class _JiyuKumiteEditor extends StatelessWidget {
             ),
             const SizedBox(height: 8),
             Text(
-              _eventsFor(competitor.id, period: currentPeriod).isEmpty
-                  ? 'Current period events: none'
-                  : 'Current period events: ${_eventsFor(competitor.id, period: currentPeriod).join(' · ')}',
-              style: Theme.of(context).textTheme.bodySmall,
-            ),
-            const SizedBox(height: 4),
-            Text(
-              _eventsFor(competitor.id).isEmpty
-                  ? 'Match history: none'
-                  : 'Match history: ${_eventsFor(competitor.id).join(' · ')}',
-              style: Theme.of(context).textTheme.bodySmall,
+              _symbolsFor(competitor.id).isEmpty
+                  ? 'Symbols: none yet'
+                  : 'Symbols: ${_symbolsFor(competitor.id)}',
+              style: Theme.of(
+                context,
+              ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w600),
             ),
           ],
         ),

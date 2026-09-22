@@ -330,12 +330,7 @@ class _LiveMatchView extends StatelessWidget {
           ),
           const SizedBox(height: 18),
           if (liveState.hasTimer) ...[
-            _TimerBanner(
-              remainingSeconds: liveState.timerRemainingSeconds,
-              running: liveState.timerRunning,
-              period: liveState.period,
-              formatter: _formatSeconds,
-            ),
+            _TimerBanner(liveState: liveState, formatter: _formatSeconds),
             const SizedBox(height: 18),
           ],
           Expanded(
@@ -444,21 +439,69 @@ class _NextUpRibbon extends StatelessWidget {
   }
 }
 
-class _TimerBanner extends StatelessWidget {
-  final int remainingSeconds;
-  final bool running;
-  final int period;
+/// Ticks locally every second (using the broadcast end timestamp) so the
+/// countdown stays smooth on screen even between live-state updates.
+class _TimerBanner extends StatefulWidget {
+  final LiveMatchState liveState;
   final String Function(int) formatter;
 
-  const _TimerBanner({
-    required this.remainingSeconds,
-    required this.running,
-    required this.period,
-    required this.formatter,
-  });
+  const _TimerBanner({required this.liveState, required this.formatter});
+
+  @override
+  State<_TimerBanner> createState() => _TimerBannerState();
+}
+
+class _TimerBannerState extends State<_TimerBanner> {
+  Timer? _ticker;
+
+  @override
+  void initState() {
+    super.initState();
+    _syncTicker();
+  }
+
+  @override
+  void didUpdateWidget(covariant _TimerBanner oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    _syncTicker();
+  }
+
+  void _syncTicker() {
+    final shouldTick =
+        widget.liveState.timerRunning &&
+        widget.liveState.timerEndsAtMillis != null;
+    if (shouldTick && _ticker == null) {
+      _ticker = Timer.periodic(const Duration(seconds: 1), (_) {
+        if (mounted) {
+          setState(() {});
+        }
+      });
+    } else if (!shouldTick && _ticker != null) {
+      _ticker?.cancel();
+      _ticker = null;
+    }
+  }
+
+  int get _displayedRemainingSeconds {
+    final endsAtMillis = widget.liveState.timerEndsAtMillis;
+    if (widget.liveState.timerRunning && endsAtMillis != null) {
+      final remainingMillis =
+          endsAtMillis - DateTime.now().millisecondsSinceEpoch;
+      return (remainingMillis / 1000).ceil();
+    }
+    return widget.liveState.timerRemainingSeconds;
+  }
+
+  @override
+  void dispose() {
+    _ticker?.cancel();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
+    final running = widget.liveState.timerRunning;
+    final period = widget.liveState.period;
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 14),
       decoration: BoxDecoration(
@@ -475,7 +518,7 @@ class _TimerBanner extends StatelessWidget {
           ),
           const SizedBox(width: 12),
           Text(
-            formatter(remainingSeconds),
+            widget.formatter(_displayedRemainingSeconds),
             style: const TextStyle(
               color: Colors.white,
               fontSize: 40,
@@ -546,12 +589,6 @@ class _CompetitorPanel extends StatelessWidget {
               fontSize: 30,
               fontWeight: FontWeight.w700,
             ),
-          ),
-          const SizedBox(height: 8),
-          Text(
-            '${competitor.belt}${competitor.club.isNotEmpty ? ' • ${competitor.club}' : ''}',
-            textAlign: TextAlign.center,
-            style: const TextStyle(color: Colors.white70, fontSize: 15),
           ),
           if (points != null) ...[
             const SizedBox(height: 18),

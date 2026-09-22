@@ -38,14 +38,10 @@ class _HomeScreenState extends State<HomeScreen> {
   final List<Division> _divisions = <Division>[];
   List<TatamiDefinition> _tatamiDefinitions = const <TatamiDefinition>[];
   List<String> _tatamiNames = <String>[];
-  Map<String, List<TatamiLogEntry>> _tatamiLogs =
-      const <String, List<TatamiLogEntry>>{};
   StreamSubscription<List<TatamiDefinition>>? _tatamiDefinitionsSubscription;
   StreamSubscription<List<Competitor>>? _competitorsSubscription;
   StreamSubscription<List<Division>>? _divisionsSubscription;
   StreamSubscription<List<TatamiAssignment>>? _tatamiSubscription;
-  StreamSubscription<Map<String, List<TatamiLogEntry>>>?
-  _tatamiLogsSubscription;
   bool _tatamiNamesLoaded = false;
   bool _competitorsLoaded = false;
   bool _divisionsLoaded = false;
@@ -120,14 +116,6 @@ class _HomeScreenState extends State<HomeScreen> {
       }
       setState(() {
         _tatamiLoaded = true;
-      });
-    }, onError: _handleStreamError);
-    _tatamiLogsSubscription = _repository.watchTatamiLogs().listen((logs) {
-      if (!mounted) {
-        return;
-      }
-      setState(() {
-        _tatamiLogs = logs;
       });
     }, onError: _handleStreamError);
   }
@@ -357,7 +345,6 @@ class _HomeScreenState extends State<HomeScreen> {
     _competitorsSubscription?.cancel();
     _divisionsSubscription?.cancel();
     _tatamiSubscription?.cancel();
-    _tatamiLogsSubscription?.cancel();
     super.dispose();
   }
 
@@ -438,10 +425,11 @@ class _HomeScreenState extends State<HomeScreen> {
                       context,
                       MaterialPageRoute(
                         builder: (context) => TatamiScreen(
-                          tatamiDefinitions: _tatamiDefinitions,
-                          divisions: _divisions,
-                          competitors: _competitors,
-                          tatamiLogs: _tatamiLogs,
+                          watchTatamiDefinitions:
+                              _repository.watchTatamiDefinitions,
+                          watchDivisions: _repository.watchDivisions,
+                          watchCompetitors: _repository.watchCompetitors,
+                          watchTatamiLogs: _repository.watchTatamiLogs,
                           onAssign: _assignDivisionToTatami,
                           onDeleteDivision: _deleteDivision,
                           onStartDivision: _startDivisionOnTatami,
@@ -450,6 +438,8 @@ class _HomeScreenState extends State<HomeScreen> {
                           onUpdateJudgeCount: _updateTatamiJudgeCount,
                           onSaveExecutionState: _saveDivisionExecutionState,
                           onPublishLiveState: _publishLiveMatchState,
+                          onSaveInProgressMatch:
+                              _repository.saveDivisionInProgressMatch,
                         ),
                       ),
                     );
