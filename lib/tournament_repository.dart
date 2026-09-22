@@ -4,6 +4,7 @@ import 'dart:io';
 
 import 'package:excel/excel.dart';
 
+import 'tournament_backend.dart';
 import 'tournament_local_store.dart';
 import 'tournament_models.dart';
 
@@ -30,6 +31,8 @@ class TournamentRepository {
   final Map<String, List<TatamiLogEntry>> _tatamiLogsByTatami =
       <String, List<TatamiLogEntry>>{};
   final Map<String, int> _tatamiJudgeCounts = <String, int>{};
+  final TournamentBackend _backend = TournamentBackend();
+  Timer? _remoteSyncTimer;
   List<String> _tatamiOrder = const <String>[];
 
   bool _initialized = false;
@@ -58,6 +61,7 @@ class TournamentRepository {
     _emitCompetitors();
     _emitDivisions();
     _initialized = true;
+    _startRemoteSync();
     await _persist();
   }
 
@@ -672,12 +676,35 @@ class TournamentRepository {
     await _persist();
   }
 
-  Future<void> _loadSnapshot() async {
-    final snapshot = await _localStore.loadSnapshot(tournamentId: tournamentId);
-    if (snapshot == null) {
+  void _startRemoteSync() {
+    if (tournamentId.trim().isEmpty) {
       return;
     }
 
+    _remoteSyncTimer?.cancel();
+    _remoteSyncTimer = Timer.periodic(const Duration(seconds: 2), (_) async {
+      try {
+        final remoteSnapshot = await _backend.loadTournamentSnapshot(tournamentId);
+        if (remoteSnapshot.isEmpty) {
+          return;
+        }
+        if (_initialized) {
+          _applySnapshot(remoteSnapshot);
+          _emitCompetitors();
+          _emitDivisions();
+          _emitTatamiNames();
+          _emitTatamiDefinitions();
+          _emitTatami();
+          _emitTatamiLogs();
+        }
+      } catch (_) {
+        // Intentionally ignore refresh errors so a temporary backend hiccup does not
+        // break the local tournament flow.
+      }
+    });
+  }
+
+  void _applySnapshot(Map<String, dynamic> snapshot) {
     List<Map<String, dynamic>> asMapList(Object? value) {
       final source = value as List<dynamic>? ?? const <dynamic>[];
       return source
@@ -767,6 +794,14 @@ class TournamentRepository {
     }
   }
 
+  Future<void> _loadSnapshot() async {
+    final snapshot = await _localStore.loadSnapshot(tournamentId: tournamentId);
+    if (snapshot == null) {
+      return;
+    }
+    _applySnapshot(snapshot);
+  }
+
   Future<void> _persist() async {
     final snapshot = <String, Object?>{
       'competitors': _competitors
@@ -805,6 +840,9 @@ class TournamentRepository {
     };
 
     await _localStore.saveSnapshot(snapshot, tournamentId: tournamentId);
+    if (tournamentId.trim().isNotEmpty) {
+      await _backend.saveTournamentSnapshot(tournamentId, snapshot);
+    }
   }
 
   Stream<T> _watchWithInitial<T>(T initialValue, Stream<T> updates) async* {
