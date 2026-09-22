@@ -8,7 +8,9 @@ import 'package:screenshot/screenshot.dart';
 import 'competitor_registration_screen.dart';
 import 'draw_sheet_screen.dart';
 import 'division_registration_screen.dart';
+import 'live_match_state.dart';
 import 'tatami_configuration_screen.dart';
+import 'tatami_display_screen.dart';
 import 'tatami_screen.dart';
 import 'tournament_access_screen.dart';
 import 'tournament_results_screen.dart';
@@ -201,6 +203,10 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Future<void> _redoDivisionOnTatami(String tatamiName, String divisionId) {
     return _repository.redoDivisionOnTatami(tatamiName, divisionId);
+  }
+
+  void _publishLiveMatchState(LiveMatchState state) {
+    _repository.publishLiveMatchState(state);
   }
 
   Future<void> _saveDivisionExecutionState(
@@ -443,6 +449,30 @@ class _HomeScreenState extends State<HomeScreen> {
                           onRedoDivision: _redoDivisionOnTatami,
                           onUpdateJudgeCount: _updateTatamiJudgeCount,
                           onSaveExecutionState: _saveDivisionExecutionState,
+                          onPublishLiveState: _publishLiveMatchState,
+                        ),
+                      ),
+                    );
+                  },
+          ),
+          (
+            title: 'Tatami Display',
+            subtitle: 'Show live match progress on a screen or projector.',
+            icon: Icons.live_tv_rounded,
+            onTap: _isLoading
+                ? null
+                : () {
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (context) => TatamiDisplayScreen(
+                          watchTatamiDefinitions:
+                              _repository.watchTatamiDefinitions,
+                          watchDivisions: _repository.watchDivisions,
+                          watchCompetitors: _repository.watchCompetitors,
+                          watchTatamiAssignments:
+                              _repository.watchTatamiAssignments,
+                          watchLiveMatchState: _repository.watchLiveMatchState,
                         ),
                       ),
                     );

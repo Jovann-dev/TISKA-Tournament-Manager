@@ -236,7 +236,8 @@ class _CompetitorRegistrationScreenState
         return;
       }
 
-      final workbook = Excel.decodeBytes(await file.readAsBytes());
+      final fileBytes = await file.readAsBytes();
+      final workbook = Excel.decodeBytes(fileBytes);
       final sheetValues = workbook.tables.values.toList();
       if (sheetValues.isEmpty) {
         if (!mounted) {
@@ -249,15 +250,15 @@ class _CompetitorRegistrationScreenState
         return;
       }
 
-      final table = sheetValues.isNotEmpty ? sheetValues.first : null;
-      if (table == null) {
+      final table = sheetValues.first;
+      if (table.rows.isEmpty) {
         if (!mounted) {
           return;
         }
         setState(() {
           isSubmitting = false;
         });
-        _showMessage('No worksheet found in XLSX file.');
+        _showMessage('The XLSX file is empty.');
         return;
       }
 

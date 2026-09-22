@@ -4,6 +4,7 @@ import 'dart:io';
 
 import 'package:excel/excel.dart';
 
+import 'live_match_state.dart';
 import 'tournament_backend.dart';
 import 'tournament_local_store.dart';
 import 'tournament_models.dart';
@@ -31,6 +32,10 @@ class TournamentRepository {
   final Map<String, List<TatamiLogEntry>> _tatamiLogsByTatami =
       <String, List<TatamiLogEntry>>{};
   final Map<String, int> _tatamiJudgeCounts = <String, int>{};
+  final Map<String, LiveMatchState?> _liveMatchStates =
+      <String, LiveMatchState?>{};
+  final Map<String, StreamController<LiveMatchState?>> _liveMatchControllers =
+      <String, StreamController<LiveMatchState?>>{};
   final TournamentBackend _backend = TournamentBackend();
   Timer? _remoteSyncTimer;
   DateTime? _lastLocalUpdatedAt;
@@ -51,6 +56,14 @@ class TournamentRepository {
     }
 
     await _loadSnapshot();
+    if (tournamentId.trim().isNotEmpty) {
+      final remoteSnapshot = await _backend.loadTournamentSnapshot(tournamentId);
+      if (remoteSnapshot.isNotEmpty) {
+        _lastLocalUpdatedAt = _snapshotUpdatedAt(remoteSnapshot);
+        _applySnapshot(remoteSnapshot);
+      }
+    }
+
     if (_tatamiOrder.isEmpty) {
       await configureTatamiDefinitions(defaultTatamis);
     } else {
@@ -63,7 +76,6 @@ class TournamentRepository {
     _emitDivisions();
     _initialized = true;
     _startRemoteSync();
-    await _persist();
   }
 
   Stream<List<Competitor>> watchCompetitors() {
@@ -106,6 +118,33 @@ class TournamentRepository {
       _copyTatamiLogs(),
       _tatamiLogsController.stream,
     );
+  }
+
+  StreamController<LiveMatchState?> _liveMatchController(String tatamiName) {
+    return _liveMatchControllers.putIfAbsent(
+      tatamiName,
+      () => StreamController<LiveMatchState?>.broadcast(),
+    );
+  }
+
+  /// Watches the live on-tatami state (current match, next match, timer,
+  /// points) broadcast by the competition execution screen. This is
+  /// in-memory only and not persisted across app restarts.
+  Stream<LiveMatchState?> watchLiveMatchState(String tatamiName) {
+    return _watchWithInitial<LiveMatchState?>(
+      _liveMatchStates[tatamiName],
+      _liveMatchController(tatamiName).stream,
+    );
+  }
+
+  void publishLiveMatchState(LiveMatchState state) {
+    _liveMatchStates[state.tatamiName] = state;
+    _liveMatchController(state.tatamiName).add(state);
+  }
+
+  void clearLiveMatchState(String tatamiName) {
+    _liveMatchStates[tatamiName] = null;
+    _liveMatchController(tatamiName).add(null);
   }
 
   Future<void> ensureDefaultTatamis(List<String> tatamiNames) async {

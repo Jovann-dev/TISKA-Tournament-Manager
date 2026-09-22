@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'competition_execution_screen.dart';
 import 'competition_results_screen.dart';
 import 'draw_sheet_screen.dart';
+import 'live_match_state.dart';
 import 'tournament_models.dart';
 
 class TatamiScreen extends StatefulWidget {
@@ -28,6 +29,7 @@ class TatamiScreen extends StatefulWidget {
     String? logMessage,
   })
   onSaveExecutionState;
+  final void Function(LiveMatchState state) onPublishLiveState;
 
   const TatamiScreen({
     super.key,
@@ -42,6 +44,7 @@ class TatamiScreen extends StatefulWidget {
     required this.onRedoDivision,
     required this.onUpdateJudgeCount,
     required this.onSaveExecutionState,
+    required this.onPublishLiveState,
   });
 
   @override
@@ -299,6 +302,7 @@ class _TatamiScreenState extends State<TatamiScreen> {
           onStartDivision: widget.onStartDivision,
           onCompleteDivision: widget.onCompleteDivision,
           onSaveExecutionState: widget.onSaveExecutionState,
+          onPublishLiveState: widget.onPublishLiveState,
         ),
       ),
     );

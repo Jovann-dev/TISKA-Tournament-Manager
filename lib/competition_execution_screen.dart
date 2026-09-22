@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import 'competition_results_screen.dart';
+import 'live_match_state.dart';
 import 'tournament_models.dart';
 
 class CompetitionExecutionScreen extends StatefulWidget {
@@ -24,6 +25,7 @@ class CompetitionExecutionScreen extends StatefulWidget {
     String? logMessage,
   })
   onSaveExecutionState;
+  final void Function(LiveMatchState state) onPublishLiveState;
 
   const CompetitionExecutionScreen({
     super.key,
@@ -35,6 +37,7 @@ class CompetitionExecutionScreen extends StatefulWidget {
     required this.onStartDivision,
     required this.onCompleteDivision,
     required this.onSaveExecutionState,
+    required this.onPublishLiveState,
   });
 
   @override
@@ -147,6 +150,7 @@ class _CompetitionExecutionScreenState
       _prepareJiyuStateForCurrentMatch(force: true);
       _initializing = false;
     });
+    _publishLiveState();
   }
 
   _ResolvedMatch? get _currentMatch => _currentMatchFrom(_results);
@@ -225,6 +229,52 @@ class _CompetitionExecutionScreenState
 
   bool get _isJiyuKumite =>
       widget.division.competitionType == CompetitionType.jiyuKumite;
+
+  void _publishLiveState() {
+    final current = _currentMatch;
+    final orderedMatches = _orderedMatches(_results);
+
+    String? nextRoundLabel;
+    Competitor? nextCompetitorA;
+    Competitor? nextCompetitorB;
+    if (current != null) {
+      final currentIndex = orderedMatches.indexWhere(
+        (match) => match.id == current.match.id,
+      );
+      if (currentIndex != -1 && currentIndex + 1 < orderedMatches.length) {
+        final nextPlanned = orderedMatches[currentIndex + 1];
+        nextRoundLabel = nextPlanned.roundLabel;
+        nextCompetitorA = _resolveSource(nextPlanned.competitorA, _results);
+        nextCompetitorB = _resolveSource(nextPlanned.competitorB, _results);
+      }
+    }
+
+    widget.onPublishLiveState(
+      LiveMatchState(
+        tatamiName: widget.tatamiName,
+        divisionId: widget.division.id,
+        divisionTitle: widget.division.title,
+        competitionType: widget.division.competitionType,
+        executionMode: widget.division.competitionType.executionMode,
+        roundLabel: current?.match.roundLabel,
+        competitorA: current?.competitorA,
+        competitorB: current?.competitorB,
+        nextRoundLabel: nextRoundLabel,
+        nextCompetitorA: nextCompetitorA,
+        nextCompetitorB: nextCompetitorB,
+        hasTimer: _isJiyuKumite,
+        timerTotalSeconds: _jiyuBaseDuration.inSeconds,
+        timerRemainingSeconds: _jiyuTimeRemaining.inSeconds,
+        timerRunning: _jiyuTimerRunning,
+        period: _jiyuPeriod,
+        competitorAPoints: _jiyuAPoints,
+        competitorBPoints: _jiyuBPoints,
+        competitorAWarningStage: _jiyuAWarningStage,
+        competitorBWarningStage: _jiyuBWarningStage,
+        updatedAt: DateTime.now().millisecondsSinceEpoch,
+      ),
+    );
+  }
 
   void _resetJiyuState({bool clearEvents = true}) {
     _jiyuAPoints = 0;
@@ -320,17 +370,20 @@ class _CompetitionExecutionScreenState
           _jiyuTimerExpired = true;
           _jiyuTimerEndsAt = null;
         });
+        _publishLiveState();
         timer.cancel();
         return;
       }
       setState(() {
         _jiyuTimeRemaining = remaining;
       });
+      _publishLiveState();
     });
     setState(() {
       _jiyuTimerRunning = true;
       _jiyuTimerExpired = false;
     });
+    _publishLiveState();
   }
 
   void _pauseJiyuTimer() {
@@ -345,6 +398,7 @@ class _CompetitionExecutionScreenState
         _jiyuTimeRemaining = remaining.isNegative ? Duration.zero : remaining;
       }
     });
+    _publishLiveState();
   }
 
   void _resetJiyuTimerOnly() {
@@ -353,6 +407,7 @@ class _CompetitionExecutionScreenState
       _jiyuTimeRemaining = _jiyuBaseDuration;
       _jiyuTimerExpired = false;
     });
+    _publishLiveState();
   }
 
   void _resetJiyuScoreAndWarnings() {
@@ -360,6 +415,7 @@ class _CompetitionExecutionScreenState
       _resetJiyuState(clearEvents: false);
       _jiyuEvents.removeWhere((event) => event.period == _jiyuPeriod);
     });
+    _publishLiveState();
   }
 
   void _startOvertimePeriod() {
@@ -374,6 +430,7 @@ class _CompetitionExecutionScreenState
       _jiyuTimeRemaining = _jiyuBaseDuration;
       _jiyuTimerExpired = false;
     });
+    _publishLiveState();
   }
 
   Future<Competitor?> _promptManualJiyuWinner(
@@ -530,6 +587,7 @@ class _CompetitionExecutionScreenState
           break;
       }
     });
+    _publishLiveState();
 
     final winnerByWarning = _jiyuAWarningStage >= 3
         ? currentMatch.competitorB
@@ -580,6 +638,7 @@ class _CompetitionExecutionScreenState
       _results[currentMatch.match.id] = completedRecord;
       _prepareJiyuStateForCurrentMatch(force: true);
     });
+    _publishLiveState();
     final enteredSummary =
         '${currentMatch.match.roundLabel} recorded: '
         '${winner.number} ${winner.name} defeated ${loser.number} ${loser.name}.';
@@ -862,6 +921,7 @@ class _CompetitionExecutionScreenState
         _manualWinnerId = null;
         _prepareJiyuStateForCurrentMatch(force: true);
       });
+      _publishLiveState();
 
       await _autoReusePreviousResults(
         initialLogMessage:
@@ -939,6 +999,7 @@ class _CompetitionExecutionScreenState
       _competitorAFlags = 0;
       _manualWinnerId = null;
     });
+    _publishLiveState();
 
     final enteredSummary =
         '${currentMatch.match.roundLabel} recorded: '
@@ -984,6 +1045,7 @@ class _CompetitionExecutionScreenState
         ..addAll(updatedResults);
       _prepareJiyuStateForCurrentMatch(force: true);
     });
+    _publishLiveState();
     await widget.onSaveExecutionState(
       widget.tatamiName,
       widget.division.id,
