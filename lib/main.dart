@@ -32,7 +32,7 @@ Future<void> main() async {
 
   await Supabase.initialize(
     url: SupabaseConfig.url,
-    anonKey: SupabaseConfig.anonKey,
+    publishableKey: SupabaseConfig.publishableKey,
   );
 
   runApp(const MyApp());
