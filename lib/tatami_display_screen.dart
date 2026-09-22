@@ -14,7 +14,6 @@ class TatamiDisplayScreen extends StatefulWidget {
   final Stream<List<TatamiDefinition>> Function() watchTatamiDefinitions;
   final Stream<List<Division>> Function() watchDivisions;
   final Stream<List<Competitor>> Function() watchCompetitors;
-  final Stream<List<TatamiAssignment>> Function() watchTatamiAssignments;
   final Stream<LiveMatchState?> Function(String tatamiName)
   watchLiveMatchState;
 
@@ -23,7 +22,6 @@ class TatamiDisplayScreen extends StatefulWidget {
     required this.watchTatamiDefinitions,
     required this.watchDivisions,
     required this.watchCompetitors,
-    required this.watchTatamiAssignments,
     required this.watchLiveMatchState,
   });
 
@@ -35,13 +33,11 @@ class _TatamiDisplayScreenState extends State<TatamiDisplayScreen> {
   StreamSubscription<List<TatamiDefinition>>? _tatamiDefinitionsSubscription;
   StreamSubscription<List<Division>>? _divisionsSubscription;
   StreamSubscription<List<Competitor>>? _competitorsSubscription;
-  StreamSubscription<List<TatamiAssignment>>? _tatamiAssignmentsSubscription;
   StreamSubscription<LiveMatchState?>? _liveStateSubscription;
 
   List<TatamiDefinition> _tatamiDefinitions = const <TatamiDefinition>[];
   List<Division> _divisions = const <Division>[];
   List<Competitor> _competitors = const <Competitor>[];
-  List<TatamiAssignment> _tatamiAssignments = const <TatamiAssignment>[];
   LiveMatchState? _liveState;
   String? _selectedTatamiName;
 
@@ -69,13 +65,6 @@ class _TatamiDisplayScreenState extends State<TatamiDisplayScreen> {
     ) {
       setState(() {
         _competitors = competitors;
-      });
-    });
-    _tatamiAssignmentsSubscription = widget.watchTatamiAssignments().listen((
-      assignments,
-    ) {
-      setState(() {
-        _tatamiAssignments = assignments;
       });
     });
   }
@@ -114,43 +103,101 @@ class _TatamiDisplayScreenState extends State<TatamiDisplayScreen> {
     for (final competitor in _competitors) competitor.id: competitor,
   };
 
-  Division? get _assignedDivision {
+  List<Division> get _divisionsForSelectedTatami {
     final tatamiName = _selectedTatamiName;
     if (tatamiName == null) {
-      return null;
+      return const <Division>[];
     }
-    final assignment = _tatamiAssignments.firstWhere(
-      (assignment) => assignment.tatamiName == tatamiName,
-      orElse: () => TatamiAssignment(tatamiName: tatamiName),
-    );
-    final divisionId = assignment.divisionId;
-    if (divisionId == null) {
-      return null;
-    }
-    for (final division in _divisions) {
-      if (division.id == divisionId) {
+    return _divisions
+        .where((division) => division.assignedTatamiName == tatamiName)
+        .toList();
+  }
+
+  /// The division actively being run on this tatami, matching how the
+  /// Competition Floor screen tracks "Start"/"Resume" per division.
+  Division? get _runningDivision {
+    for (final division in _divisionsForSelectedTatami) {
+      if (division.progress == DivisionProgress.running) {
         return division;
       }
     }
     return null;
   }
 
+  /// The most recently finished division for this tatami. Stays on screen
+  /// as results until the organizer starts the next queued division.
+  Division? get _mostRecentlyCompletedDivision {
+    Division? latest;
+    for (final division in _divisionsForSelectedTatami) {
+      if (division.progress != DivisionProgress.completed) {
+        continue;
+      }
+      if (latest == null ||
+          (division.completedAt ?? 0) > (latest.completedAt ?? 0)) {
+        latest = division;
+      }
+    }
+    return latest;
+  }
+
+  bool get _hasQueuedDivision => _divisionsForSelectedTatami.any(
+    (division) => division.progress == DivisionProgress.queued,
+  );
+
   @override
   void dispose() {
     _tatamiDefinitionsSubscription?.cancel();
     _divisionsSubscription?.cancel();
     _competitorsSubscription?.cancel();
-    _tatamiAssignmentsSubscription?.cancel();
     _liveStateSubscription?.cancel();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    final division = _assignedDivision;
+    final runningDivision = _runningDivision;
+    final completedDivision = runningDivision == null
+        ? _mostRecentlyCompletedDivision
+        : null;
     final liveState = _liveState;
-    final showingCorrectDivision =
-        liveState != null && division != null && liveState.divisionId == division.id;
+    final showingLiveMatch =
+        runningDivision != null &&
+        liveState != null &&
+        liveState.divisionId == runningDivision.id;
+
+    Widget content;
+    if (_selectedTatamiName == null) {
+      content = const _DisplayPlaceholder(
+        icon: Icons.grid_view_rounded,
+        title: 'No tatamis configured',
+        subtitle: 'Configure tatamis from the home screen first.',
+      );
+    } else if (runningDivision != null) {
+      content = showingLiveMatch
+          ? _LiveMatchView(division: runningDivision, liveState: liveState)
+          : _DisplayPlaceholder(
+              icon: Icons.hourglass_top_rounded,
+              title: runningDivision.title,
+              subtitle: 'Preparing the next match...',
+            );
+    } else if (completedDivision != null) {
+      content = _LiveResultsView(
+        division: completedDivision,
+        competitorsById: _competitorsById,
+      );
+    } else if (_hasQueuedDivision) {
+      content = _DisplayPlaceholder(
+        icon: Icons.hourglass_top_rounded,
+        title: _selectedTatamiName!,
+        subtitle: 'Waiting for the organizer to start the next division...',
+      );
+    } else {
+      content = _DisplayPlaceholder(
+        icon: Icons.hourglass_top_rounded,
+        title: _selectedTatamiName!,
+        subtitle: 'Waiting for a division to be assigned...',
+      );
+    }
 
     return Scaffold(
       backgroundColor: const Color(0xFF14161B),
@@ -187,34 +234,12 @@ class _TatamiDisplayScreenState extends State<TatamiDisplayScreen> {
         ],
       ),
       body: SafeArea(
-        child: _selectedTatamiName == null
-            ? const _DisplayPlaceholder(
-                icon: Icons.grid_view_rounded,
-                title: 'No tatamis configured',
-                subtitle: 'Configure tatamis from the home screen first.',
-              )
-            : division == null
-            ? _DisplayPlaceholder(
-                icon: Icons.hourglass_top_rounded,
-                title: _selectedTatamiName!,
-                subtitle: 'Waiting for a division to be assigned...',
-              )
-            : division.progress == DivisionProgress.completed
-            ? _LiveResultsView(
-                tatamiName: _selectedTatamiName!,
-                division: division,
-                competitorsById: _competitorsById,
-              )
-            : !showingCorrectDivision
-            ? _DisplayPlaceholder(
-                icon: Icons.hourglass_top_rounded,
-                title: division.title,
-                subtitle: 'Preparing the next match...',
-              )
-            : _LiveMatchView(
-                division: division,
-                liveState: liveState,
-              ),
+        child: Column(
+          children: [
+            Expanded(child: content),
+            if (showingLiveMatch) _NextUpRibbon(liveState: liveState),
+          ],
+        ),
       ),
     );
   }
@@ -284,7 +309,7 @@ class _LiveMatchView extends StatelessWidget {
     }
 
     return Padding(
-      padding: const EdgeInsets.fromLTRB(28, 20, 28, 28),
+      padding: const EdgeInsets.fromLTRB(28, 20, 28, 16),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
@@ -314,7 +339,6 @@ class _LiveMatchView extends StatelessWidget {
             const SizedBox(height: 18),
           ],
           Expanded(
-            flex: 5,
             child: Row(
               children: [
                 Expanded(
@@ -357,52 +381,62 @@ class _LiveMatchView extends StatelessWidget {
               ],
             ),
           ),
-          const SizedBox(height: 20),
-          Text(
+        ],
+      ),
+    );
+  }
+}
+
+/// Full-width ribbon fixed at the bottom of the display showing who competes
+/// after the current match.
+class _NextUpRibbon extends StatelessWidget {
+  final LiveMatchState liveState;
+
+  const _NextUpRibbon({required this.liveState});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 14),
+      decoration: const BoxDecoration(
+        color: Color(0xFFD9A62A),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black45,
+            blurRadius: 8,
+            offset: Offset(0, -2),
+          ),
+        ],
+      ),
+      child: Row(
+        children: [
+          const Icon(Icons.arrow_forward_rounded, color: Color(0xFF1B1D22)),
+          const SizedBox(width: 10),
+          const Text(
             'NEXT UP',
             style: TextStyle(
-              color: Colors.white.withValues(alpha: 0.5),
-              fontSize: 14,
-              fontWeight: FontWeight.w700,
+              color: Color(0xFF1B1D22),
+              fontWeight: FontWeight.w800,
+              fontSize: 15,
               letterSpacing: 2,
             ),
           ),
-          const SizedBox(height: 10),
+          const SizedBox(width: 18),
           Expanded(
-            flex: 2,
-            child: liveState.hasNextMatch
-                ? Row(
-                    children: [
-                      Expanded(
-                        child: _NextCompetitorChip(
-                          competitor: liveState.nextCompetitorA!,
-                        ),
-                      ),
-                      const SizedBox(
-                        width: 60,
-                        child: Center(
-                          child: Text(
-                            'vs',
-                            style: TextStyle(
-                              color: Colors.white38,
-                              fontSize: 16,
-                            ),
-                          ),
-                        ),
-                      ),
-                      Expanded(
-                        child: _NextCompetitorChip(
-                          competitor: liveState.nextCompetitorB!,
-                        ),
-                      ),
-                    ],
-                  )
-                : const Center(
-                    child: Text(
-                      'Final match of the division',
-                      style: TextStyle(color: Colors.white38, fontSize: 16),
-                    ),
-                  ),
+            child: Text(
+              liveState.hasNextMatch
+                  ? '${liveState.nextCompetitorA!.number} ${liveState.nextCompetitorA!.name}   vs   '
+                        '${liveState.nextCompetitorB!.number} ${liveState.nextCompetitorB!.name}'
+                  : 'Final match of the division',
+              textAlign: TextAlign.right,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(
+                color: Color(0xFF1B1D22),
+                fontSize: 18,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
           ),
         ],
       ),
@@ -559,49 +593,11 @@ class _CompetitorPanel extends StatelessWidget {
   }
 }
 
-class _NextCompetitorChip extends StatelessWidget {
-  final Competitor competitor;
-
-  const _NextCompetitorChip({required this.competitor});
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-      decoration: BoxDecoration(
-        color: const Color(0xFF1F222A),
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: Colors.white12),
-      ),
-      child: Column(
-        children: [
-          Text(
-            '${competitor.number} • ${competitor.name}',
-            textAlign: TextAlign.center,
-            style: const TextStyle(
-              color: Colors.white,
-              fontSize: 18,
-              fontWeight: FontWeight.w600,
-            ),
-          ),
-          const SizedBox(height: 4),
-          Text(
-            competitor.belt,
-            style: const TextStyle(color: Colors.white54, fontSize: 13),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
 class _LiveResultsView extends StatelessWidget {
-  final String tatamiName;
   final Division division;
   final Map<String, Competitor> competitorsById;
 
   const _LiveResultsView({
-    required this.tatamiName,
     required this.division,
     required this.competitorsById,
   });
@@ -627,9 +623,23 @@ class _LiveResultsView extends StatelessWidget {
     }
   }
 
+  List<Competitor> _nonPlacers() {
+    final placedIds = division.placements
+        .expand((placement) => placement.competitorIds)
+        .toSet();
+    return competitorsById.values
+        .where(
+          (competitor) =>
+              division.competitorIds.contains(competitor.id) &&
+              !placedIds.contains(competitor.id),
+        )
+        .toList();
+  }
+
   @override
   Widget build(BuildContext context) {
     final placements = division.placements;
+    final nonPlacers = _nonPlacers();
     return SingleChildScrollView(
       padding: const EdgeInsets.fromLTRB(28, 24, 28, 28),
       child: Column(
@@ -715,6 +725,25 @@ class _LiveResultsView extends StatelessWidget {
                 ),
               );
             }),
+          if (nonPlacers.isNotEmpty) ...[
+            const SizedBox(height: 12),
+            Text(
+              'Also competed',
+              style: TextStyle(
+                color: Colors.white.withValues(alpha: 0.5),
+                fontSize: 13,
+                fontWeight: FontWeight.w700,
+                letterSpacing: 1.5,
+              ),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              nonPlacers
+                  .map((competitor) => '${competitor.number} ${competitor.name}')
+                  .join(', '),
+              style: const TextStyle(color: Colors.white54, fontSize: 14),
+            ),
+          ],
           const SizedBox(height: 24),
           const Center(
             child: Text(

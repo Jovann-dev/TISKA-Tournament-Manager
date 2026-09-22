@@ -470,8 +470,6 @@ class _HomeScreenState extends State<HomeScreen> {
                               _repository.watchTatamiDefinitions,
                           watchDivisions: _repository.watchDivisions,
                           watchCompetitors: _repository.watchCompetitors,
-                          watchTatamiAssignments:
-                              _repository.watchTatamiAssignments,
                           watchLiveMatchState: _repository.watchLiveMatchState,
                         ),
                       ),
