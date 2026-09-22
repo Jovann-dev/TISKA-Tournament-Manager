@@ -1,12 +1,13 @@
 #!/bin/bash
 set -e
 
-# Install Flutter SDK in the build environment
-if [ ! -d "$PWD/flutter" ]; then
-  git clone https://github.com/flutter/flutter.git --depth 1 -b stable "$PWD/flutter"
+# Install Flutter outside the repo so Netlify does not scan the downloaded SDK cache
+FLUTTER_DIR="${FLUTTER_DIR:-/tmp/flutter}"
+if [ ! -d "$FLUTTER_DIR" ]; then
+  git clone https://github.com/flutter/flutter.git --depth 1 -b stable "$FLUTTER_DIR"
 fi
 
-export PATH="$PATH:$PWD/flutter/bin"
+export PATH="$FLUTTER_DIR/bin:$PATH"
 
 flutter config --enable-web
 flutter pub get

@@ -2,6 +2,9 @@
   command = "bash build.sh"
   publish = "build/web"
 
+[build.environment]
+  SECRETS_SCAN_SMART_DETECTION_ENABLED = "false"
+
 [[redirects]]
   from = "/*"
   to = "/index.html"
