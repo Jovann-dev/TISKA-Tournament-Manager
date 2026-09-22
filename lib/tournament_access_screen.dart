@@ -3,7 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import 'home_screen.dart';
-import 'tournament_local_store.dart';
+import 'tournament_backend.dart';
 
 class TournamentAccessScreen extends StatefulWidget {
   const TournamentAccessScreen({super.key});
@@ -27,23 +27,29 @@ class _TournamentAccessScreenState extends State<TournamentAccessScreen> {
   }
 
   Future<void> _loadSavedTournaments() async {
-    final store = TournamentLocalStore();
-    final credentials = await store.loadTournamentCredentials();
-    final lastTournamentId = await store.loadActiveTournamentId();
+    try {
+      final backend = TournamentBackend();
+      final credentials = await backend.loadTournamentCredentials();
 
-    if (!mounted) {
-      return;
-    }
-
-    setState(() {
-      _savedTournaments
-        ..clear()
-        ..addAll(credentials);
-      _isLoadingSavedTournaments = false;
-      if (lastTournamentId != null && lastTournamentId.isNotEmpty) {
-        _tournamentIdController.text = lastTournamentId;
+      if (!mounted) {
+        return;
       }
-    });
+
+      setState(() {
+        _savedTournaments
+          ..clear()
+          ..addAll(credentials);
+        _isLoadingSavedTournaments = false;
+      });
+    } catch (_) {
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _isLoadingSavedTournaments = false;
+        _errorMessage = 'Unable to load tournaments from the shared backend.';
+      });
+    }
   }
 
   Future<void> _openTournament({required bool createNewTournament}) async {
@@ -70,8 +76,8 @@ class _TournamentAccessScreenState extends State<TournamentAccessScreen> {
     });
 
     try {
-      final store = TournamentLocalStore();
-      final registrations = await store.loadTournamentCredentials();
+      final backend = TournamentBackend();
+      final registrations = await backend.loadTournamentCredentials();
 
       if (createNewTournament) {
         if (registrations.containsKey(tournamentId)) {
@@ -79,8 +85,7 @@ class _TournamentAccessScreenState extends State<TournamentAccessScreen> {
             'A tournament with this ID already exists. Please choose another ID.',
           );
         }
-        registrations[tournamentId] = password;
-        await store.saveTournamentCredentials(registrations);
+        await backend.saveTournamentCredentials(tournamentId, password);
       } else {
         final savedPassword = registrations[tournamentId];
         if (savedPassword == null || savedPassword != password) {
@@ -89,8 +94,6 @@ class _TournamentAccessScreenState extends State<TournamentAccessScreen> {
           );
         }
       }
-
-      await store.setActiveTournamentId(tournamentId);
 
       if (!mounted) {
         return;
