@@ -23,6 +23,8 @@ class TournamentResultsScreen extends StatefulWidget {
 
 class _TournamentResultsScreenState extends State<TournamentResultsScreen> {
   static const String _allTatamis = 'All tatamis';
+  final TextEditingController _competitorSearchController =
+      TextEditingController();
   String _selectedTatami = _allTatamis;
 
   String _formatCompletedAt(int? completedAt) {
@@ -47,6 +49,7 @@ class _TournamentResultsScreenState extends State<TournamentResultsScreen> {
   }
 
   List<Division> get _completedDivisions {
+    final query = _competitorSearchController.text.trim().toLowerCase();
     final completed = widget.divisions
         .where((division) => division.progress == DivisionProgress.completed)
         .where(
@@ -54,6 +57,17 @@ class _TournamentResultsScreenState extends State<TournamentResultsScreen> {
               _selectedTatami == _allTatamis ||
               division.assignedTatamiName == _selectedTatami,
         )
+        .where((division) {
+          if (query.isEmpty) {
+            return true;
+          }
+          return widget.competitors.any(
+            (competitor) =>
+                division.competitorIds.contains(competitor.id) &&
+                (competitor.name.toLowerCase().contains(query) ||
+                    competitor.number.toLowerCase().contains(query)),
+          );
+        })
         .toList();
     completed.sort((left, right) {
       final leftCompleted = left.completedAt ?? 0;
@@ -93,6 +107,12 @@ class _TournamentResultsScreenState extends State<TournamentResultsScreen> {
         ),
       ),
     );
+  }
+
+  @override
+  void dispose() {
+    _competitorSearchController.dispose();
+    super.dispose();
   }
 
   @override
@@ -140,28 +160,53 @@ class _TournamentResultsScreenState extends State<TournamentResultsScreen> {
                 Card(
                   child: Padding(
                     padding: const EdgeInsets.all(16),
-                    child: DropdownButtonFormField<String>(
-                      initialValue: _selectedTatami,
-                      decoration: const InputDecoration(
-                        labelText: 'Filter by tatami',
-                        border: OutlineInputBorder(),
-                      ),
-                      items: tatamiFilters
-                          .map(
-                            (tatamiName) => DropdownMenuItem<String>(
-                              value: tatamiName,
-                              child: Text(tatamiName),
-                            ),
-                          )
-                          .toList(),
-                      onChanged: (value) {
-                        if (value == null) {
-                          return;
-                        }
-                        setState(() {
-                          _selectedTatami = value;
-                        });
-                      },
+                    child: Column(
+                      children: [
+                        DropdownButtonFormField<String>(
+                          initialValue: _selectedTatami,
+                          decoration: const InputDecoration(
+                            labelText: 'Filter by tatami',
+                            border: OutlineInputBorder(),
+                          ),
+                          items: tatamiFilters
+                              .map(
+                                (tatamiName) => DropdownMenuItem<String>(
+                                  value: tatamiName,
+                                  child: Text(tatamiName),
+                                ),
+                              )
+                              .toList(),
+                          onChanged: (value) {
+                            if (value == null) {
+                              return;
+                            }
+                            setState(() {
+                              _selectedTatami = value;
+                            });
+                          },
+                        ),
+                        const SizedBox(height: 12),
+                        TextField(
+                          controller: _competitorSearchController,
+                          onChanged: (_) => setState(() {}),
+                          decoration: InputDecoration(
+                            labelText: 'Filter by competitor',
+                            hintText: 'Name or competitor number',
+                            prefixIcon: const Icon(Icons.search),
+                            suffixIcon: _competitorSearchController.text.isEmpty
+                                ? null
+                                : IconButton(
+                                    tooltip: 'Clear search',
+                                    onPressed: () {
+                                      _competitorSearchController.clear();
+                                      setState(() {});
+                                    },
+                                    icon: const Icon(Icons.clear),
+                                  ),
+                            border: const OutlineInputBorder(),
+                          ),
+                        ),
+                      ],
                     ),
                   ),
                 ),
@@ -171,7 +216,7 @@ class _TournamentResultsScreenState extends State<TournamentResultsScreen> {
                     child: Padding(
                       padding: EdgeInsets.all(16),
                       child: Text(
-                        'No completed divisions match the selected tatami filter.',
+                        'No completed divisions match the selected filters.',
                       ),
                     ),
                   )

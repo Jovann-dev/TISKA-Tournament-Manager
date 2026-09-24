@@ -132,9 +132,7 @@ class _TatamiScreenState extends State<TatamiScreen> {
         _divisions = divisions;
       });
     });
-    _competitorsSubscription = widget.watchCompetitors().listen((
-      competitors,
-    ) {
+    _competitorsSubscription = widget.watchCompetitors().listen((competitors) {
       setState(() {
         _competitors = competitors;
       });
@@ -270,11 +268,107 @@ class _TatamiScreenState extends State<TatamiScreen> {
         selected == division.assignedTatamiName) {
       return;
     }
+    if (division.progress == DivisionProgress.running &&
+        !await _confirmRunningDivisionMove(division, selected)) {
+      return;
+    }
 
     await _performTatamiAction(() async {
       await widget.onAssign(selected, division.id);
       _replaceDivision(division.copyWith(assignedTatamiName: selected));
     });
+  }
+
+  Future<void> _takeDivisionFromAnotherTatami() async {
+    final available =
+        _divisions
+            .where(
+              (division) =>
+                  division.assignedTatamiName != selectedTatamiName &&
+                  division.progress != DivisionProgress.completed,
+            )
+            .toList()
+          ..sort((left, right) => left.createdAt.compareTo(right.createdAt));
+
+    final selected = await showDialog<Division>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text('Take division for $selectedTatamiName'),
+        content: SizedBox(
+          width: 620,
+          child: available.isEmpty
+              ? const Text(
+                  'No active or queued divisions are available on other tatamis.',
+                )
+              : ListView.separated(
+                  shrinkWrap: true,
+                  itemCount: available.length,
+                  separatorBuilder: (_, _) => const Divider(height: 1),
+                  itemBuilder: (context, index) {
+                    final division = available[index];
+                    return ListTile(
+                      title: Text(division.title),
+                      subtitle: Text(
+                        '${division.assignedTatamiName} | ${division.progress.label} | '
+                        '${division.competitorIds.length} competitors',
+                      ),
+                      trailing: FilledButton(
+                        onPressed: () => Navigator.pop(context, division),
+                        child: const Text('Take'),
+                      ),
+                    );
+                  },
+                ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Close'),
+          ),
+        ],
+      ),
+    );
+    if (!mounted || selected == null) {
+      return;
+    }
+    if (selected.progress == DivisionProgress.running &&
+        !await _confirmRunningDivisionMove(selected, selectedTatamiName)) {
+      return;
+    }
+
+    await _performTatamiAction(() async {
+      await widget.onAssign(selectedTatamiName, selected.id);
+      _replaceDivision(
+        selected.copyWith(assignedTatamiName: selectedTatamiName),
+      );
+    });
+  }
+
+  Future<bool> _confirmRunningDivisionMove(
+    Division division,
+    String targetTatami,
+  ) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Move active division?'),
+        content: Text(
+          '"${division.title}" is currently running on '
+          '${division.assignedTatamiName}. Move it to $targetTatami?',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Move Division'),
+          ),
+        ],
+      ),
+    );
+    return confirmed == true && mounted;
   }
 
   Future<void> _confirmDeleteDivision(Division division) async {
@@ -682,6 +776,19 @@ class _TatamiScreenState extends State<TatamiScreen> {
                             ),
                           ),
                         ),
+                      const SizedBox(height: 8),
+                      Align(
+                        alignment: Alignment.centerLeft,
+                        child: OutlinedButton.icon(
+                          onPressed: isUpdating || _isDeletingDivision
+                              ? null
+                              : _takeDivisionFromAnotherTatami,
+                          icon: const Icon(Icons.move_down_rounded),
+                          label: const Text(
+                            'Take division from another tatami',
+                          ),
+                        ),
+                      ),
                       const SizedBox(height: 16),
                       Text(
                         'Completed divisions',

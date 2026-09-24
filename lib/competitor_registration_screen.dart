@@ -32,6 +32,7 @@ class _CompetitorRegistrationScreenState
   final nameController = TextEditingController();
   final birthYearController = TextEditingController();
   final clubController = TextEditingController();
+  final searchController = TextEditingController();
 
   Gender selectedGender = Gender.male;
   String selectedBelt = beltOrder.first;
@@ -41,6 +42,20 @@ class _CompetitorRegistrationScreenState
   bool isSubmitting = false;
 
   bool get isEditing => editingCompetitorId != null;
+
+  List<Competitor> get _filteredCompetitors {
+    final query = searchController.text.trim().toLowerCase();
+    if (query.isEmpty) {
+      return widget.competitors;
+    }
+    return widget.competitors
+        .where(
+          (competitor) =>
+              competitor.name.toLowerCase().contains(query) ||
+              competitor.number.toLowerCase().contains(query),
+        )
+        .toList();
+  }
 
   Future<void> saveCompetitor() async {
     final number = numberController.text.trim();
@@ -427,6 +442,7 @@ class _CompetitorRegistrationScreenState
     nameController.dispose();
     birthYearController.dispose();
     clubController.dispose();
+    searchController.dispose();
     super.dispose();
   }
 
@@ -438,277 +454,296 @@ class _CompetitorRegistrationScreenState
         child: Center(
           child: ConstrainedBox(
             constraints: const BoxConstraints(maxWidth: 1080),
-            child: Padding(
+            child: ListView(
               padding: const EdgeInsets.all(20),
-              child: Column(
-                children: [
-                  Card(
-                    child: Padding(
-                      padding: const EdgeInsets.all(16),
-                      child: Row(
-                        children: [
-                          const Icon(Icons.badge_outlined, size: 28),
-                          const SizedBox(width: 12),
-                          Expanded(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text(
-                                  'Competitor Registry',
-                                  style: Theme.of(context).textTheme.titleLarge,
-                                ),
-                                const SizedBox(height: 2),
-                                Text(
-                                  'Total competitors: ${widget.competitors.length}',
-                                  style: Theme.of(context).textTheme.bodyMedium,
-                                ),
-                              ],
-                            ),
+              children: [
+                Card(
+                  child: Padding(
+                    padding: const EdgeInsets.all(16),
+                    child: Row(
+                      children: [
+                        const Icon(Icons.badge_outlined, size: 28),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                'Competitor Registry',
+                                style: Theme.of(context).textTheme.titleLarge,
+                              ),
+                              const SizedBox(height: 2),
+                              Text(
+                                'Total competitors: ${widget.competitors.length}',
+                                style: Theme.of(context).textTheme.bodyMedium,
+                              ),
+                            ],
                           ),
-                          if (isSubmitting)
-                            const SizedBox(
-                              width: 24,
-                              height: 24,
-                              child: CircularProgressIndicator(strokeWidth: 2),
+                        ),
+                        Wrap(
+                          spacing: 8,
+                          runSpacing: 8,
+                          alignment: WrapAlignment.end,
+                          children: [
+                            OutlinedButton.icon(
+                              onPressed: isSubmitting ? null : _importXlsx,
+                              icon: const Icon(Icons.upload_file),
+                              label: const Text('Import XLSX'),
                             ),
-                        ],
-                      ),
+                            OutlinedButton.icon(
+                              onPressed: isSubmitting
+                                  ? null
+                                  : _createXlsxForRegistrations,
+                              icon: const Icon(Icons.description),
+                              label: const Text('Create XLSX'),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(width: 8),
+                        if (isSubmitting)
+                          const SizedBox(
+                            width: 24,
+                            height: 24,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          ),
+                      ],
                     ),
                   ),
-                  const SizedBox(height: 12),
-                  Card(
-                    child: Padding(
-                      padding: const EdgeInsets.all(16),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
+                ),
+                const SizedBox(height: 12),
+                Card(
+                  child: Padding(
+                    padding: const EdgeInsets.all(16),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          isEditing ? 'Edit competitor' : 'Register competitor',
+                          style: Theme.of(context).textTheme.titleLarge,
+                        ),
+                        const SizedBox(height: 16),
+                        TextField(
+                          controller: numberController,
+                          enabled: !isSubmitting,
+                          decoration: const InputDecoration(
+                            labelText: 'Competitor Number',
+                            border: OutlineInputBorder(),
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+                        TextField(
+                          controller: nameController,
+                          enabled: !isSubmitting,
+                          decoration: const InputDecoration(
+                            labelText: 'Competitor Name',
+                            border: OutlineInputBorder(),
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+                        DropdownButtonFormField<String>(
+                          initialValue: selectedBelt,
+                          decoration: const InputDecoration(
+                            labelText: 'Belt',
+                            border: OutlineInputBorder(),
+                          ),
+                          items: beltOrder
+                              .map(
+                                (belt) => DropdownMenuItem<String>(
+                                  value: belt,
+                                  child: Text(belt),
+                                ),
+                              )
+                              .toList(),
+                          onChanged: isSubmitting
+                              ? null
+                              : (value) {
+                                  if (value != null) {
+                                    setState(() {
+                                      selectedBelt = value;
+                                    });
+                                  }
+                                },
+                        ),
+                        const SizedBox(height: 12),
+                        DropdownButtonFormField<Gender>(
+                          initialValue: selectedGender,
+                          decoration: const InputDecoration(
+                            labelText: 'Gender',
+                            border: OutlineInputBorder(),
+                          ),
+                          items: Gender.values
+                              .map(
+                                (gender) => DropdownMenuItem<Gender>(
+                                  value: gender,
+                                  child: Text(gender.label),
+                                ),
+                              )
+                              .toList(),
+                          onChanged: isSubmitting
+                              ? null
+                              : (value) {
+                                  if (value != null) {
+                                    setState(() {
+                                      selectedGender = value;
+                                    });
+                                  }
+                                },
+                        ),
+                        const SizedBox(height: 12),
+                        TextField(
+                          controller: birthYearController,
+                          enabled: !isSubmitting,
+                          keyboardType: TextInputType.number,
+                          decoration: const InputDecoration(
+                            labelText: 'Birth Year',
+                            hintText: 'e.g. 2009',
+                            border: OutlineInputBorder(),
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+                        TextField(
+                          controller: clubController,
+                          enabled: !isSubmitting,
+                          decoration: const InputDecoration(
+                            labelText: 'Club (optional)',
+                            border: OutlineInputBorder(),
+                          ),
+                        ),
+                        const SizedBox(height: 16),
+                        Row(
+                          children: [
+                            ElevatedButton(
+                              onPressed: isSubmitting ? null : saveCompetitor,
+                              child: Text(
+                                isEditing
+                                    ? 'Update Competitor'
+                                    : 'Add Competitor',
+                              ),
+                            ),
+                            const SizedBox(width: 12),
+                            TextButton(
+                              onPressed: isEditing && !isSubmitting
+                                  ? () => setState(_resetForm)
+                                  : null,
+                              child: const Text('Cancel Edit'),
+                            ),
+                          ],
+                        ),
+                        if (_activeSpreadsheetPath != null) ...[
+                          const SizedBox(height: 12),
                           Text(
-                            isEditing
-                                ? 'Edit competitor'
-                                : 'Register competitor',
-                            style: Theme.of(context).textTheme.titleLarge,
-                          ),
-                          const SizedBox(height: 16),
-                          TextField(
-                            controller: numberController,
-                            enabled: !isSubmitting,
-                            decoration: const InputDecoration(
-                              labelText: 'Competitor Number',
-                              border: OutlineInputBorder(),
-                            ),
-                          ),
-                          const SizedBox(height: 12),
-                          TextField(
-                            controller: nameController,
-                            enabled: !isSubmitting,
-                            decoration: const InputDecoration(
-                              labelText: 'Competitor Name',
-                              border: OutlineInputBorder(),
-                            ),
-                          ),
-                          const SizedBox(height: 12),
-                          DropdownButtonFormField<String>(
-                            initialValue: selectedBelt,
-                            decoration: const InputDecoration(
-                              labelText: 'Belt',
-                              border: OutlineInputBorder(),
-                            ),
-                            items: beltOrder
-                                .map(
-                                  (belt) => DropdownMenuItem<String>(
-                                    value: belt,
-                                    child: Text(belt),
-                                  ),
-                                )
-                                .toList(),
-                            onChanged: isSubmitting
-                                ? null
-                                : (value) {
-                                    if (value != null) {
-                                      setState(() {
-                                        selectedBelt = value;
-                                      });
-                                    }
-                                  },
-                          ),
-                          const SizedBox(height: 12),
-                          DropdownButtonFormField<Gender>(
-                            initialValue: selectedGender,
-                            decoration: const InputDecoration(
-                              labelText: 'Gender',
-                              border: OutlineInputBorder(),
-                            ),
-                            items: Gender.values
-                                .map(
-                                  (gender) => DropdownMenuItem<Gender>(
-                                    value: gender,
-                                    child: Text(gender.label),
-                                  ),
-                                )
-                                .toList(),
-                            onChanged: isSubmitting
-                                ? null
-                                : (value) {
-                                    if (value != null) {
-                                      setState(() {
-                                        selectedGender = value;
-                                      });
-                                    }
-                                  },
-                          ),
-                          const SizedBox(height: 12),
-                          TextField(
-                            controller: birthYearController,
-                            enabled: !isSubmitting,
-                            keyboardType: TextInputType.number,
-                            decoration: const InputDecoration(
-                              labelText: 'Birth Year',
-                              hintText: 'e.g. 2009',
-                              border: OutlineInputBorder(),
-                            ),
-                          ),
-                          const SizedBox(height: 12),
-                          TextField(
-                            controller: clubController,
-                            enabled: !isSubmitting,
-                            decoration: const InputDecoration(
-                              labelText: 'Club (optional)',
-                              border: OutlineInputBorder(),
-                            ),
-                          ),
-                          const SizedBox(height: 16),
-                          Row(
-                            children: [
-                              ElevatedButton(
-                                onPressed: isSubmitting ? null : saveCompetitor,
-                                child: Text(
-                                  isEditing
-                                      ? 'Update Competitor'
-                                      : 'Add Competitor',
-                                ),
-                              ),
-                              const SizedBox(width: 12),
-                              TextButton(
-                                onPressed: isEditing && !isSubmitting
-                                    ? () => setState(_resetForm)
-                                    : null,
-                                child: const Text('Cancel Edit'),
-                              ),
-                            ],
-                          ),
-                          const SizedBox(height: 12),
-                          Wrap(
-                            spacing: 12,
-                            runSpacing: 8,
-                            children: [
-                              OutlinedButton.icon(
-                                onPressed: isSubmitting ? null : _importXlsx,
-                                icon: const Icon(Icons.upload_file),
-                                label: const Text('Import XLSX'),
-                              ),
-                              OutlinedButton.icon(
-                                onPressed: isSubmitting
-                                    ? null
-                                    : _createXlsxForRegistrations,
-                                icon: const Icon(Icons.description),
-                                label: const Text('Create XLSX File'),
-                              ),
-                              if (_activeSpreadsheetPath != null)
-                                Text(
-                                  'Active file: ${_activeSpreadsheetPath!.split(Platform.pathSeparator).last}',
-                                ),
-                            ],
+                            'Active file: ${_activeSpreadsheetPath!.split(Platform.pathSeparator).last}',
                           ),
                         ],
-                      ),
+                      ],
                     ),
                   ),
-                  const SizedBox(height: 16),
-                  Expanded(
-                    child: widget.competitors.isEmpty
-                        ? const Center(
-                            child: Text('No competitors registered yet.'),
-                          )
-                        : ListView.builder(
-                            itemCount: widget.competitors.length,
-                            itemBuilder: (context, index) {
-                              final competitor = widget.competitors[index];
-                              return Card(
-                                child: ListTile(
-                                  title: Text(
-                                    '${competitor.number} - ${competitor.name}',
-                                  ),
-                                  subtitle: Text(
-                                    '${competitor.belt} belt, ${competitor.gender.label}, age ${competitor.age}${competitor.club.isEmpty ? '' : ', club ${competitor.club}'}',
-                                  ),
-                                  onTap: isSubmitting
-                                      ? null
-                                      : () => editCompetitor(competitor),
-                                  trailing: Wrap(
-                                    spacing: 8,
-                                    children: [
-                                      IconButton(
-                                        icon: const Icon(Icons.edit),
-                                        onPressed: isSubmitting
-                                            ? null
-                                            : () => editCompetitor(competitor),
-                                      ),
-                                      IconButton(
-                                        icon: const Icon(
-                                          Icons.delete,
-                                          color: Colors.red,
-                                        ),
-                                        onPressed: isSubmitting
-                                            ? null
-                                            : () async {
-                                                setState(() {
-                                                  isSubmitting = true;
-                                                });
-                                                try {
-                                                  await widget.onDelete(
-                                                    competitor.id,
-                                                  );
-                                                  await _syncSpreadsheetIfLoaded(
-                                                    widget.competitors
-                                                        .where(
-                                                          (item) =>
-                                                              item.id !=
-                                                              competitor.id,
-                                                        )
-                                                        .toList(),
-                                                  );
-                                                  if (!mounted) {
-                                                    return;
-                                                  }
-                                                  setState(() {
-                                                    if (editingCompetitorId ==
-                                                        competitor.id) {
-                                                      _resetForm();
-                                                    }
-                                                    isSubmitting = false;
-                                                  });
-                                                } catch (error) {
-                                                  if (!mounted) {
-                                                    return;
-                                                  }
-                                                  setState(() {
-                                                    isSubmitting = false;
-                                                  });
-                                                  _showMessage(
-                                                    'Unable to delete competitor: $error',
-                                                  );
-                                                }
-                                              },
-                                      ),
-                                    ],
-                                  ),
-                                ),
-                              );
+                ),
+                const SizedBox(height: 16),
+                TextField(
+                  controller: searchController,
+                  onChanged: (_) => setState(() {}),
+                  decoration: InputDecoration(
+                    labelText: 'Search registered competitors',
+                    hintText: 'Name or competitor number',
+                    prefixIcon: const Icon(Icons.search),
+                    suffixIcon: searchController.text.isEmpty
+                        ? null
+                        : IconButton(
+                            tooltip: 'Clear search',
+                            onPressed: () {
+                              searchController.clear();
+                              setState(() {});
                             },
+                            icon: const Icon(Icons.clear),
                           ),
+                    border: const OutlineInputBorder(),
                   ),
-                ],
-              ),
+                ),
+                const SizedBox(height: 8),
+                if (widget.competitors.isEmpty)
+                  const Card(
+                    child: Padding(
+                      padding: EdgeInsets.all(16),
+                      child: Text('No competitors registered yet.'),
+                    ),
+                  )
+                else if (_filteredCompetitors.isEmpty)
+                  const Card(
+                    child: Padding(
+                      padding: EdgeInsets.all(16),
+                      child: Text('No competitors match this search.'),
+                    ),
+                  )
+                else
+                  ..._filteredCompetitors.map((competitor) {
+                    return Card(
+                      child: ListTile(
+                        title: Text(
+                          '${competitor.number} - ${competitor.name}',
+                        ),
+                        subtitle: Text(
+                          '${competitor.belt} belt, ${competitor.gender.label}, age ${competitor.age}${competitor.club.isEmpty ? '' : ', club ${competitor.club}'}',
+                        ),
+                        onTap: isSubmitting
+                            ? null
+                            : () => editCompetitor(competitor),
+                        trailing: Wrap(
+                          spacing: 8,
+                          children: [
+                            IconButton(
+                              icon: const Icon(Icons.edit),
+                              onPressed: isSubmitting
+                                  ? null
+                                  : () => editCompetitor(competitor),
+                            ),
+                            IconButton(
+                              icon: const Icon(Icons.delete, color: Colors.red),
+                              onPressed: isSubmitting
+                                  ? null
+                                  : () async {
+                                      setState(() {
+                                        isSubmitting = true;
+                                      });
+                                      try {
+                                        await widget.onDelete(competitor.id);
+                                        await _syncSpreadsheetIfLoaded(
+                                          widget.competitors
+                                              .where(
+                                                (item) =>
+                                                    item.id != competitor.id,
+                                              )
+                                              .toList(),
+                                        );
+                                        if (!mounted) {
+                                          return;
+                                        }
+                                        setState(() {
+                                          if (editingCompetitorId ==
+                                              competitor.id) {
+                                            _resetForm();
+                                          }
+                                          isSubmitting = false;
+                                        });
+                                      } catch (error) {
+                                        if (!mounted) {
+                                          return;
+                                        }
+                                        setState(() {
+                                          isSubmitting = false;
+                                        });
+                                        _showMessage(
+                                          'Unable to delete competitor: $error',
+                                        );
+                                      }
+                                    },
+                            ),
+                          ],
+                        ),
+                      ),
+                    );
+                  }),
+              ],
             ),
           ),
         ),

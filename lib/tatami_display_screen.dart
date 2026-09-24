@@ -14,8 +14,7 @@ class TatamiDisplayScreen extends StatefulWidget {
   final Stream<List<TatamiDefinition>> Function() watchTatamiDefinitions;
   final Stream<List<Division>> Function() watchDivisions;
   final Stream<List<Competitor>> Function() watchCompetitors;
-  final Stream<LiveMatchState?> Function(String tatamiName)
-  watchLiveMatchState;
+  final Stream<LiveMatchState?> Function(String tatamiName) watchLiveMatchState;
 
   const TatamiDisplayScreen({
     super.key,
@@ -40,6 +39,7 @@ class _TatamiDisplayScreenState extends State<TatamiDisplayScreen> {
   List<Competitor> _competitors = const <Competitor>[];
   LiveMatchState? _liveState;
   String? _selectedTatamiName;
+  bool _presentationMode = false;
 
   @override
   void initState() {
@@ -60,9 +60,7 @@ class _TatamiDisplayScreenState extends State<TatamiDisplayScreen> {
         _divisions = divisions;
       });
     });
-    _competitorsSubscription = widget.watchCompetitors().listen((
-      competitors,
-    ) {
+    _competitorsSubscription = widget.watchCompetitors().listen((competitors) {
       setState(() {
         _competitors = competitors;
       });
@@ -76,16 +74,16 @@ class _TatamiDisplayScreenState extends State<TatamiDisplayScreen> {
       _liveState = null;
       return;
     }
-    _liveStateSubscription = widget
-        .watchLiveMatchState(tatamiName)
-        .listen((state) {
-          if (!mounted) {
-            return;
-          }
-          setState(() {
-            _liveState = state;
-          });
-        });
+    _liveStateSubscription = widget.watchLiveMatchState(tatamiName).listen((
+      state,
+    ) {
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _liveState = state;
+      });
+    });
   }
 
   void _selectTatami(String tatamiName) {
@@ -201,43 +199,78 @@ class _TatamiDisplayScreenState extends State<TatamiDisplayScreen> {
 
     return Scaffold(
       backgroundColor: const Color(0xFF14161B),
-      appBar: AppBar(
-        backgroundColor: const Color(0xFF1B1D22),
-        foregroundColor: Colors.white,
-        title: const Text('Tatami Display'),
-        actions: [
-          if (_tatamiDefinitions.isNotEmpty)
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-              child: DropdownButtonHideUnderline(
-                child: DropdownButton<String>(
-                  value: _selectedTatamiName,
-                  dropdownColor: const Color(0xFF1B1D22),
-                  style: const TextStyle(color: Colors.white, fontSize: 16),
-                  iconEnabledColor: Colors.white,
-                  items: _tatamiDefinitions
-                      .map(
-                        (definition) => DropdownMenuItem<String>(
-                          value: definition.name,
-                          child: Text(definition.name),
+      appBar: _presentationMode
+          ? null
+          : AppBar(
+              backgroundColor: const Color(0xFF1B1D22),
+              foregroundColor: Colors.white,
+              title: const Text('Tatami Display'),
+              actions: [
+                if (_tatamiDefinitions.isNotEmpty)
+                  Padding(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 12,
+                      vertical: 8,
+                    ),
+                    child: DropdownButtonHideUnderline(
+                      child: DropdownButton<String>(
+                        value: _selectedTatamiName,
+                        dropdownColor: const Color(0xFF1B1D22),
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 16,
                         ),
-                      )
-                      .toList(),
-                  onChanged: (value) {
-                    if (value != null) {
-                      _selectTatami(value);
-                    }
+                        iconEnabledColor: Colors.white,
+                        items: _tatamiDefinitions
+                            .map(
+                              (definition) => DropdownMenuItem<String>(
+                                value: definition.name,
+                                child: Text(definition.name),
+                              ),
+                            )
+                            .toList(),
+                        onChanged: (value) {
+                          if (value != null) {
+                            _selectTatami(value);
+                          }
+                        },
+                      ),
+                    ),
+                  ),
+                IconButton(
+                  tooltip: 'Enter presentation mode',
+                  onPressed: () {
+                    setState(() {
+                      _presentationMode = true;
+                    });
                   },
+                  icon: const Icon(Icons.fullscreen_rounded),
+                ),
+              ],
+            ),
+      body: SafeArea(
+        child: Stack(
+          children: [
+            Column(
+              children: [
+                Expanded(child: content),
+                if (showingLiveMatch) _NextUpRibbon(liveState: liveState),
+              ],
+            ),
+            if (_presentationMode)
+              Positioned(
+                top: 8,
+                right: 8,
+                child: IconButton.filledTonal(
+                  tooltip: 'Exit presentation mode',
+                  onPressed: () {
+                    setState(() {
+                      _presentationMode = false;
+                    });
+                  },
+                  icon: const Icon(Icons.fullscreen_exit_rounded),
                 ),
               ),
-            ),
-        ],
-      ),
-      body: SafeArea(
-        child: Column(
-          children: [
-            Expanded(child: content),
-            if (showingLiveMatch) _NextUpRibbon(liveState: liveState),
           ],
         ),
       ),
@@ -561,7 +594,10 @@ class _CompetitorPanel extends StatelessWidget {
         gradient: LinearGradient(
           begin: Alignment.topCenter,
           end: Alignment.bottomCenter,
-          colors: [accentColor.withValues(alpha: 0.85), const Color(0xFF14161B)],
+          colors: [
+            accentColor.withValues(alpha: 0.85),
+            const Color(0xFF14161B),
+          ],
         ),
         borderRadius: BorderRadius.circular(20),
         border: Border.all(color: Colors.white24),
@@ -776,7 +812,9 @@ class _LiveResultsView extends StatelessWidget {
             const SizedBox(height: 8),
             Text(
               nonPlacers
-                  .map((competitor) => '${competitor.number} ${competitor.name}')
+                  .map(
+                    (competitor) => '${competitor.number} ${competitor.name}',
+                  )
                   .join(', '),
               style: const TextStyle(color: Colors.white54, fontSize: 14),
             ),

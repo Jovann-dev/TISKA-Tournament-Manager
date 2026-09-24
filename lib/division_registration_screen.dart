@@ -34,6 +34,49 @@ class _DivisionRegistrationScreenState
 
   bool get isEditing => editingDivisionId != null;
 
+  List<Division> get _sortedDivisions {
+    final divisions = List<Division>.from(widget.divisions);
+    divisions.sort((left, right) {
+      final progressComparison = _progressOrder(left.progress)
+          .compareTo(_progressOrder(right.progress));
+      if (progressComparison != 0) {
+        return progressComparison;
+      }
+      return left.createdAt.compareTo(right.createdAt);
+    });
+    return divisions;
+  }
+
+  int _progressOrder(DivisionProgress progress) {
+    return switch (progress) {
+      DivisionProgress.queued => 0,
+      DivisionProgress.running => 1,
+      DivisionProgress.completed => 2,
+    };
+  }
+
+  ({IconData icon, Color color, String tooltip}) _progressIndicator(
+    DivisionProgress progress,
+  ) {
+    return switch (progress) {
+      DivisionProgress.queued => (
+        icon: Icons.schedule_rounded,
+        color: const Color(0xFF687386),
+        tooltip: 'Not started',
+      ),
+      DivisionProgress.running => (
+        icon: Icons.play_circle_fill_rounded,
+        color: const Color(0xFFD9A62A),
+        tooltip: 'In progress',
+      ),
+      DivisionProgress.completed => (
+        icon: Icons.check_circle_rounded,
+        color: const Color(0xFF2E7D32),
+        tooltip: 'Finished',
+      ),
+    };
+  }
+
   @override
   void initState() {
     super.initState();
@@ -596,8 +639,11 @@ class _DivisionRegistrationScreenState
                             ),
                           )
                         else
-                          ...widget.divisions.map(
-                            (division) => Card(
+                          ..._sortedDivisions.map((division) {
+                            final indicator = _progressIndicator(
+                              division.progress,
+                            );
+                            return Card(
                               child: ListTile(
                                 title: Text(division.title),
                                 subtitle: Text(
@@ -609,8 +655,17 @@ class _DivisionRegistrationScreenState
                                     : () => editDivision(division),
                                 trailing: Wrap(
                                   spacing: 8,
+                                  crossAxisAlignment: WrapCrossAlignment.center,
                                   children: [
+                                    Tooltip(
+                                      message: indicator.tooltip,
+                                      child: Icon(
+                                        indicator.icon,
+                                        color: indicator.color,
+                                      ),
+                                    ),
                                     IconButton(
+                                      tooltip: 'Edit division',
                                       icon: const Icon(Icons.edit),
                                       onPressed: isSubmitting
                                           ? null
@@ -657,8 +712,8 @@ class _DivisionRegistrationScreenState
                                   ],
                                 ),
                               ),
-                            ),
-                          ),
+                            );
+                          }),
                       ],
                     ),
                   ),

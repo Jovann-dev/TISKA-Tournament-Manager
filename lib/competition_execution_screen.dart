@@ -539,6 +539,30 @@ class _CompetitionExecutionScreenState
       return;
     }
 
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('End this match?'),
+        content: Text(
+          'Record the result for ${currentMatch.competitorA.name} vs '
+          '${currentMatch.competitorB.name}?',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('End Match'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) {
+      return;
+    }
+
     Competitor? winner;
     if (_jiyuAPoints > _jiyuBPoints) {
       winner = currentMatch.competitorA;
@@ -571,6 +595,50 @@ class _CompetitionExecutionScreenState
       return currentStage + 1;
     }
     return 3;
+  }
+
+  void _undoLastJiyuEvent() {
+    final currentMatch = _currentMatch;
+    if (currentMatch == null) {
+      return;
+    }
+    final eventIndex = _jiyuEvents.lastIndexWhere(
+      (event) => event.period == _jiyuPeriod,
+    );
+    if (eventIndex == -1) {
+      _showMessage('No event is available to undo in this period.');
+      return;
+    }
+
+    setState(() {
+      _jiyuEvents.removeAt(eventIndex);
+      _jiyuAPoints = 0;
+      _jiyuBPoints = 0;
+      _jiyuAWarningStage = 0;
+      _jiyuBWarningStage = 0;
+      for (final event in _jiyuEvents.where(
+        (event) => event.period == _jiyuPeriod,
+      )) {
+        final isCompetitorA = event.competitorId == currentMatch.competitorA.id;
+        if (event.kind == KumiteEventKind.wazaAri ||
+            event.kind == KumiteEventKind.ippon) {
+          if (isCompetitorA) {
+            _jiyuAPoints += event.pointsAwarded;
+          } else {
+            _jiyuBPoints += event.pointsAwarded;
+          }
+        } else if (event.kind == KumiteEventKind.warning) {
+          final stage = (event.warningStage?.index ?? -1) + 1;
+          if (isCompetitorA) {
+            _jiyuAWarningStage = stage;
+          } else {
+            _jiyuBWarningStage = stage;
+          }
+        }
+      }
+    });
+    _publishLiveState();
+    _persistInProgressMatch();
   }
 
   void _recordJiyuEvent(
@@ -1281,6 +1349,28 @@ class _CompetitionExecutionScreenState
   }
 
   Future<void> _finishCompetition() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Complete competition?'),
+        content: const Text(
+          'This records the final placements and marks the division finished.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Complete'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) {
+      return;
+    }
     setState(() {
       _isSubmitting = true;
     });
@@ -1492,6 +1582,7 @@ class _CompetitionExecutionScreenState
                               onResetTimer: _resetJiyuTimerOnly,
                               onResetScoreAndWarnings:
                                   _resetJiyuScoreAndWarnings,
+                              onUndoLastEvent: _undoLastJiyuEvent,
                               onEndMatch: _endCurrentJiyuMatch,
                               onOvertime: _startOvertimePeriod,
                             )
@@ -1859,6 +1950,7 @@ class _JiyuKumiteEditor extends StatelessWidget {
   final VoidCallback onPauseTimer;
   final VoidCallback onResetTimer;
   final VoidCallback onResetScoreAndWarnings;
+  final VoidCallback onUndoLastEvent;
   final Future<void> Function() onEndMatch;
   final VoidCallback onOvertime;
 
@@ -1884,6 +1976,7 @@ class _JiyuKumiteEditor extends StatelessWidget {
     required this.onPauseTimer,
     required this.onResetTimer,
     required this.onResetScoreAndWarnings,
+    required this.onUndoLastEvent,
     required this.onEndMatch,
     required this.onOvertime,
   });
@@ -1977,9 +2070,8 @@ class _JiyuKumiteEditor extends StatelessWidget {
               _symbolsFor(competitor.id).isEmpty
                   ? 'Symbols: none yet'
                   : 'Symbols: ${_symbolsFor(competitor.id)}',
-              style: Theme.of(
-                context,
-              ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w600),
+              style: Theme.of(context).textTheme.titleMedium
+                  ?.copyWith(fontWeight: FontWeight.w600),
             ),
           ],
         ),
@@ -2031,6 +2123,14 @@ class _JiyuKumiteEditor extends StatelessWidget {
                     OutlinedButton(
                       onPressed: onResetScoreAndWarnings,
                       child: const Text('Reset Score/Warnings'),
+                    ),
+                    OutlinedButton.icon(
+                      onPressed:
+                          events.any((event) => event.period == currentPeriod)
+                          ? onUndoLastEvent
+                          : null,
+                      icon: const Icon(Icons.undo_rounded),
+                      label: const Text('Undo Last Event'),
                     ),
                     FilledButton(
                       onPressed: onEndMatch,
