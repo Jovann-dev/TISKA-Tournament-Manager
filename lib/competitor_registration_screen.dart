@@ -4,8 +4,10 @@ import 'dart:typed_data';
 
 import 'package:excel/excel.dart';
 import 'package:file_selector/file_selector.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
+import 'browser_download.dart';
 import 'tournament_models.dart';
 
 List<List<String>> _decodeXlsxRows(Uint8List bytes) {
@@ -67,6 +69,13 @@ List<int> _encodeCompetitorsXlsx(List<Map<String, Object>> competitors) {
     throw StateError('Unable to generate XLSX content.');
   }
   return bytes;
+}
+
+Future<T> _runXlsxWork<T>(T Function() action) async {
+  if (kIsWeb) {
+    return action();
+  }
+  return Isolate.run(action);
 }
 
 class CompetitorRegistrationScreen extends StatefulWidget {
@@ -260,7 +269,16 @@ class _CompetitorRegistrationScreenState
           },
         )
         .toList();
-    final bytes = await Isolate.run(() => _encodeCompetitorsXlsx(data));
+    final bytes = await _runXlsxWork(() => _encodeCompetitorsXlsx(data));
+    if (kIsWeb) {
+      await downloadBytes(
+        fileName: path,
+        bytes: Uint8List.fromList(bytes),
+        mimeType:
+            'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      );
+      return;
+    }
     await File(path).writeAsBytes(bytes, flush: true);
   }
 
@@ -302,7 +320,7 @@ class _CompetitorRegistrationScreenState
       }
 
       final fileBytes = await file.readAsBytes();
-      final rows = await Isolate.run(() => _decodeXlsxRows(fileBytes));
+      final rows = await _runXlsxWork(() => _decodeXlsxRows(fileBytes));
       if (rows.isEmpty) {
         if (!mounted) {
           return;
@@ -365,7 +383,9 @@ class _CompetitorRegistrationScreenState
       };
 
       await widget.onReplaceCompetitors(dedupedByNumber.values.toList());
-      _activeSpreadsheetPath = file.path;
+      if (!kIsWeb) {
+        _activeSpreadsheetPath = file.path;
+      }
 
       if (!mounted) {
         return;
@@ -407,6 +427,14 @@ class _CompetitorRegistrationScreenState
       isSubmitting = true;
     });
     try {
+      if (kIsWeb) {
+        await _writeXlsx('competitors.xlsx', widget.competitors);
+        if (!mounted) {
+          return;
+        }
+        _showMessage('Competitors XLSX downloaded.');
+        return;
+      }
       final location = await getSaveLocation(
         suggestedName: 'competitors.xlsx',
         acceptedTypeGroups: const [

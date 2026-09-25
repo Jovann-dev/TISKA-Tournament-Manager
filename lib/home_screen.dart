@@ -1,10 +1,14 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:typed_data';
 
+import 'package:archive/archive.dart';
 import 'package:file_selector/file_selector.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:screenshot/screenshot.dart';
 
+import 'browser_download.dart';
 import 'competitor_registration_screen.dart';
 import 'draw_sheet_screen.dart';
 import 'division_registration_screen.dart';
@@ -214,6 +218,10 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Future<void> _saveDrawSheetsToFolder() async {
+    if (kIsWeb) {
+      await _saveDataForWeb();
+      return;
+    }
     final selectedFolder = await getDirectoryPath(
       confirmButtonText: 'Save Draw Sheets Here',
     );
@@ -273,6 +281,42 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
+  Future<void> _saveDataForWeb() async {
+    try {
+      final files = _repository.buildTournamentExportFiles();
+      files.addAll(await _captureDrawSheetImages());
+
+      final archive = Archive();
+      for (final entry in files.entries) {
+        archive.addFile(
+          ArchiveFile(entry.key, entry.value.length, entry.value),
+        );
+      }
+      final zipBytes = ZipEncoder().encode(archive);
+      if (zipBytes == null) {
+        throw StateError('Unable to create tournament ZIP file.');
+      }
+      await downloadBytes(
+        fileName: 'tiska_tournament_data.zip',
+        bytes: Uint8List.fromList(zipBytes),
+        mimeType: 'application/zip',
+      );
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Tournament data ZIP downloaded.')),
+      );
+    } catch (error) {
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Unable to save tournament data: $error')),
+      );
+    }
+  }
+
   Future<void> _closeApp() async {
     if (!mounted) {
       return;
@@ -287,15 +331,24 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Future<int> _exportDrawSheetImagesToFolder(String folderPath) async {
+    final images = await _captureDrawSheetImages();
+    for (final entry in images.entries) {
+      final file = File('$folderPath${Platform.pathSeparator}${entry.key}');
+      await file.writeAsBytes(entry.value, flush: true);
+    }
+    return images.length;
+  }
+
+  Future<Map<String, Uint8List>> _captureDrawSheetImages() async {
+    final images = <String, Uint8List>{};
     if (_divisions.isEmpty) {
-      return 0;
+      return images;
     }
 
     final screenshotController = ScreenshotController();
-    var exported = 0;
     for (final division in _divisions) {
       if (!mounted) {
-        return exported;
+        return images;
       }
       if (division.matchRecords.isEmpty && division.placements.isEmpty) {
         continue;
@@ -327,12 +380,10 @@ class _HomeScreenState extends State<HomeScreen> {
       final safeName = _safeFileName(
         '${division.assignedTatamiName}_${division.title}_${division.id}.png',
       );
-      final file = File('$folderPath${Platform.pathSeparator}$safeName');
-      await file.writeAsBytes(imageBytes, flush: true);
-      exported += 1;
+      images[safeName] = imageBytes;
     }
 
-    return exported;
+    return images;
   }
 
   String _safeFileName(String value) {

@@ -365,6 +365,17 @@ class TournamentRepository {
       throw StateError('Selected folder does not exist.');
     }
 
+    final files = buildTournamentExportFiles();
+    for (final entry in files.entries) {
+      final file = File('${target.path}${Platform.pathSeparator}${entry.key}');
+      await file.writeAsBytes(entry.value, flush: true);
+    }
+    return '${target.path}${Platform.pathSeparator}tournament_drawsheet_summary.json';
+  }
+
+  Map<String, List<int>> buildTournamentExportFiles() {
+    final files = <String, List<int>>{};
+
     final byId = <String, Competitor>{
       for (final competitor in _competitors) competitor.id: competitor,
     };
@@ -387,12 +398,8 @@ class TournamentRepository {
           .toList(),
     };
 
-    final summaryFile = File(
-      '${target.path}${Platform.pathSeparator}tournament_drawsheet_summary.json',
-    );
-    await summaryFile.writeAsString(
-      const JsonEncoder.withIndent('  ').convert(summary),
-      flush: true,
+    files['tournament_drawsheet_summary.json'] = utf8.encode(
+      const JsonEncoder.withIndent(' ').convert(summary),
     );
 
     final workbook = Excel.createExcel();
@@ -423,10 +430,7 @@ class TournamentRepository {
     if (workbookBytes == null) {
       throw StateError('Unable to generate competitors XLSX file.');
     }
-    final competitorsFile = File(
-      '${target.path}${Platform.pathSeparator}competitors.xlsx',
-    );
-    await competitorsFile.writeAsBytes(workbookBytes, flush: true);
+    files['competitors.xlsx'] = workbookBytes;
 
     for (final division in _divisions) {
       final divisionPayload = <String, Object?>{
@@ -451,14 +455,12 @@ class TournamentRepository {
       final fileName = _safeFileName(
         '${division.assignedTatamiName}_${division.title}_${division.id}.json',
       );
-      final file = File('${target.path}${Platform.pathSeparator}$fileName');
-      await file.writeAsString(
-        const JsonEncoder.withIndent('  ').convert(divisionPayload),
-        flush: true,
+      files[fileName] = utf8.encode(
+        const JsonEncoder.withIndent(' ').convert(divisionPayload),
       );
     }
 
-    return summaryFile.path;
+    return files;
   }
 
   Future<void> saveDivision(Division division) {

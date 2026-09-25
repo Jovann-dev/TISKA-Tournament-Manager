@@ -9,6 +9,20 @@ class TournamentLocalStore {
   static const String _credentialsKey = 'tiska_tournament_credentials_v1';
   static const String _activeTournamentKey = 'tiska_active_tournament_id_v1';
 
+  Future<Object?> _decodeJson(String encoded) async {
+    if (kIsWeb) {
+      return jsonDecode(encoded);
+    }
+    return compute(jsonDecode, encoded);
+  }
+
+  Future<String> _encodeJson(Object? value) async {
+    if (kIsWeb) {
+      return jsonEncode(value);
+    }
+    return compute(jsonEncode, value);
+  }
+
   String _scopeKey(String baseKey, String tournamentId) {
     final normalized = tournamentId.trim();
     if (normalized.isEmpty) {
@@ -25,7 +39,7 @@ class TournamentLocalStore {
       return null;
     }
 
-    final decoded = await compute(jsonDecode, encoded);
+    final decoded = await _decodeJson(encoded);
     if (decoded is! Map) {
       return null;
     }
@@ -38,7 +52,7 @@ class TournamentLocalStore {
   }) async {
     final preferences = await SharedPreferences.getInstance();
     final key = _scopeKey(_snapshotKey, tournamentId);
-    final encoded = await compute(jsonEncode, snapshot);
+    final encoded = await _encodeJson(snapshot);
     await preferences.setString(key, encoded);
   }
 
@@ -55,7 +69,7 @@ class TournamentLocalStore {
 
     final preferences = await SharedPreferences.getInstance();
     final key = _scopeKey(_drawSheetSnapshotsKey, tournamentId);
-    final encoded = await compute(jsonEncode, items);
+    final encoded = await _encodeJson(items);
     await preferences.setString(key, encoded);
   }
 
@@ -69,7 +83,7 @@ class TournamentLocalStore {
       return <Map<String, dynamic>>[];
     }
 
-    final decoded = await compute(jsonDecode, encoded);
+    final decoded = await _decodeJson(encoded);
     if (decoded is! List<dynamic>) {
       return <Map<String, dynamic>>[];
     }
@@ -87,7 +101,7 @@ class TournamentLocalStore {
       return <String, String>{};
     }
 
-    final decoded = await compute(jsonDecode, encoded);
+    final decoded = await _decodeJson(encoded);
     if (decoded is! Map) {
       return <String, String>{};
     }
@@ -101,7 +115,7 @@ class TournamentLocalStore {
     Map<String, String> credentials,
   ) async {
     final preferences = await SharedPreferences.getInstance();
-    final encoded = await compute(jsonEncode, credentials);
+    final encoded = await _encodeJson(credentials);
     await preferences.setString(_credentialsKey, encoded);
   }
 
