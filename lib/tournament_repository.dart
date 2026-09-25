@@ -39,6 +39,9 @@ class TournamentRepository {
   final TournamentBackend _backend = TournamentBackend();
   Timer? _remoteSyncTimer;
   DateTime? _lastLocalUpdatedAt;
+  Map<String, dynamic>? _pendingRemoteSnapshot;
+  bool _remoteWriteInProgress = false;
+  bool _remoteSyncInProgress = false;
   List<String> _tatamiOrder = const <String>[];
 
   bool _initialized = false;
@@ -57,7 +60,9 @@ class TournamentRepository {
 
     await _loadSnapshot();
     if (tournamentId.trim().isNotEmpty) {
-      final remoteSnapshot = await _backend.loadTournamentSnapshot(tournamentId);
+      final remoteSnapshot = await _backend.loadTournamentSnapshot(
+        tournamentId,
+      );
       if (remoteSnapshot.isNotEmpty) {
         _lastLocalUpdatedAt = _snapshotUpdatedAt(remoteSnapshot);
         _applySnapshot(remoteSnapshot);
@@ -744,20 +749,30 @@ class TournamentRepository {
 
     _remoteSyncTimer?.cancel();
     _remoteSyncTimer = Timer.periodic(const Duration(seconds: 2), (_) async {
+      if (_remoteSyncInProgress ||
+          _remoteWriteInProgress ||
+          _pendingRemoteSnapshot != null) {
+        return;
+      }
+      _remoteSyncInProgress = true;
       try {
-        final remoteSnapshot = await _backend.loadTournamentSnapshot(tournamentId);
+        final remoteSnapshot = await _backend.loadTournamentSnapshot(
+          tournamentId,
+        );
         if (remoteSnapshot.isEmpty) {
           return;
         }
 
         final remoteUpdatedAt = _snapshotUpdatedAt(remoteSnapshot);
-        if (_lastLocalUpdatedAt != null && remoteUpdatedAt != null &&
+        if (_lastLocalUpdatedAt != null &&
+            remoteUpdatedAt != null &&
             !remoteUpdatedAt.isAfter(_lastLocalUpdatedAt!)) {
           return;
         }
 
         if (_initialized) {
           _applySnapshot(remoteSnapshot);
+          _lastLocalUpdatedAt = remoteUpdatedAt;
           _emitCompetitors();
           _emitDivisions();
           _emitTatamiNames();
@@ -768,6 +783,8 @@ class TournamentRepository {
       } catch (_) {
         // Intentionally ignore refresh errors so a temporary backend hiccup does not
         // break the local tournament flow.
+      } finally {
+        _remoteSyncInProgress = false;
       }
     });
   }
@@ -881,7 +898,7 @@ class TournamentRepository {
 
   Future<void> _persist() async {
     final timestamp = DateTime.now().toUtc().toIso8601String();
-    final snapshot = <String, Object?>{
+    final snapshot = <String, dynamic>{
       'updated_at': timestamp,
       'competitors': _competitors
           .map(
@@ -921,7 +938,31 @@ class TournamentRepository {
     _lastLocalUpdatedAt = DateTime.parse(timestamp).toUtc();
     await _localStore.saveSnapshot(snapshot, tournamentId: tournamentId);
     if (tournamentId.trim().isNotEmpty) {
-      await _backend.saveTournamentSnapshot(tournamentId, snapshot);
+      _pendingRemoteSnapshot = snapshot;
+      unawaited(_flushRemoteSnapshots());
+    }
+  }
+
+  Future<void> _flushRemoteSnapshots() async {
+    if (_remoteWriteInProgress) {
+      return;
+    }
+    _remoteWriteInProgress = true;
+    try {
+      while (_pendingRemoteSnapshot != null) {
+        final snapshot = _pendingRemoteSnapshot!;
+        _pendingRemoteSnapshot = null;
+        try {
+          await _backend.saveTournamentSnapshot(tournamentId, snapshot);
+        } catch (_) {
+          // Local persistence remains authoritative during transient outages.
+        }
+      }
+    } finally {
+      _remoteWriteInProgress = false;
+      if (_pendingRemoteSnapshot != null) {
+        unawaited(_flushRemoteSnapshots());
+      }
     }
   }
 

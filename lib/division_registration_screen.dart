@@ -238,17 +238,19 @@ class _DivisionRegistrationScreenState
       }
       setState(() {
         _resetForm();
-        isSubmitting = false;
       });
       _showMessage(wasEditing ? 'Division updated.' : 'Division registered.');
     } catch (error) {
       if (!mounted) {
         return;
       }
-      setState(() {
-        isSubmitting = false;
-      });
       _showMessage('Unable to save division: $error');
+    } finally {
+      if (mounted && isSubmitting) {
+        setState(() {
+          isSubmitting = false;
+        });
+      }
     }
   }
 

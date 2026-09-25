@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 class TournamentLocalStore {
@@ -24,7 +25,7 @@ class TournamentLocalStore {
       return null;
     }
 
-    final decoded = jsonDecode(encoded);
+    final decoded = await compute(jsonDecode, encoded);
     if (decoded is! Map) {
       return null;
     }
@@ -37,7 +38,7 @@ class TournamentLocalStore {
   }) async {
     final preferences = await SharedPreferences.getInstance();
     final key = _scopeKey(_snapshotKey, tournamentId);
-    final encoded = jsonEncode(snapshot);
+    final encoded = await compute(jsonEncode, snapshot);
     await preferences.setString(key, encoded);
   }
 
@@ -54,7 +55,8 @@ class TournamentLocalStore {
 
     final preferences = await SharedPreferences.getInstance();
     final key = _scopeKey(_drawSheetSnapshotsKey, tournamentId);
-    await preferences.setString(key, jsonEncode(items));
+    final encoded = await compute(jsonEncode, items);
+    await preferences.setString(key, encoded);
   }
 
   Future<List<Map<String, dynamic>>> loadDrawSheetSnapshots({
@@ -67,7 +69,7 @@ class TournamentLocalStore {
       return <Map<String, dynamic>>[];
     }
 
-    final decoded = jsonDecode(encoded);
+    final decoded = await compute(jsonDecode, encoded);
     if (decoded is! List<dynamic>) {
       return <Map<String, dynamic>>[];
     }
@@ -85,7 +87,7 @@ class TournamentLocalStore {
       return <String, String>{};
     }
 
-    final decoded = jsonDecode(encoded);
+    final decoded = await compute(jsonDecode, encoded);
     if (decoded is! Map) {
       return <String, String>{};
     }
@@ -95,12 +97,12 @@ class TournamentLocalStore {
     });
   }
 
-  Future<void> saveTournamentCredentials(Map<String, String> credentials) async {
+  Future<void> saveTournamentCredentials(
+    Map<String, String> credentials,
+  ) async {
     final preferences = await SharedPreferences.getInstance();
-    await preferences.setString(
-      _credentialsKey,
-      jsonEncode(credentials),
-    );
+    final encoded = await compute(jsonEncode, credentials);
+    await preferences.setString(_credentialsKey, encoded);
   }
 
   Future<List<String>> loadSavedTournamentIds() async {
