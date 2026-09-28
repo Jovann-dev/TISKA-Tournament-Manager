@@ -18,7 +18,7 @@
 //    NETLIFY_AUTH_TOKEN
 //    NETLIFY_SITE_ID
 //
-// This file is the app entry point for the tournament manager.
+// This file is the app entry point for the TISKA tournament manager.
 
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
