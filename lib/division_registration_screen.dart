@@ -213,6 +213,10 @@ class _DivisionRegistrationScreenState
       _showMessage('Add at least two competitors to create a division.');
       return;
     }
+    if (selectedCompetitorIds.length > 16) {
+      _showMessage('A division can contain at most 16 competitors.');
+      return;
+    }
 
     final wasEditing = isEditing;
     final currentEditingDivision = editingDivision;

@@ -114,6 +114,17 @@ class _CompetitionExecutionScreenState
       if (winner == null || loser == null) {
         continue;
       }
+      final expectedA = _resolveSource(planMatch.competitorA, hydrated);
+      final expectedB = _resolveSource(planMatch.competitorB, hydrated);
+      final recordedPairMatchesPlan =
+          expectedA != null &&
+          expectedB != null &&
+          ((competitorA.id == expectedA.id && competitorB.id == expectedB.id) ||
+              (competitorA.id == expectedB.id &&
+                  competitorB.id == expectedA.id));
+      if (!recordedPairMatchesPlan) {
+        continue;
+      }
       hydrated[record.matchId] = _RecordedMatch(
         match: planMatch,
         competitorA: competitorA,
@@ -2218,13 +2229,13 @@ class _CompetitionPlan {
         matches: <_PlannedMatch>[
           const _PlannedMatch(
             id: firstMatchId,
-            roundLabel: 'Opening Match',
+            roundLabel: 'Semifinal',
             competitorA: _CompetitorSource.direct(0),
             competitorB: _CompetitorSource.direct(1),
           ),
           const _PlannedMatch(
             id: thirdPlaceMatchId,
-            roundLabel: 'Loser Qualifier',
+            roundLabel: 'Semifinal',
             competitorA: _CompetitorSource.loser(firstMatchId),
             competitorB: _CompetitorSource.direct(2),
           ),
@@ -2242,10 +2253,34 @@ class _CompetitionPlan {
     final matches = <_PlannedMatch>[];
     final semifinalIds = <String>[];
     var matchCounter = 1;
-    List<_CompetitorSource> currentRound = List<_CompetitorSource>.generate(
-      competitors.length,
-      (index) => _CompetitorSource.direct(index),
-    );
+    final bracketSize = competitors.length < 8 ? 8 : 16;
+    final byeCount = bracketSize - competitors.length;
+    final pairedCompetitorCount = competitors.length - byeCount;
+    final openingRound = <_CompetitorSource>[];
+    final openingRoundLabel = _roundLabel(bracketSize);
+
+    for (var index = 0; index < pairedCompetitorCount; index += 2) {
+      final matchId = 'match_$matchCounter';
+      matchCounter += 1;
+      matches.add(
+        _PlannedMatch(
+          id: matchId,
+          roundLabel: openingRoundLabel,
+          competitorA: _CompetitorSource.direct(index),
+          competitorB: _CompetitorSource.direct(index + 1),
+        ),
+      );
+      openingRound.add(_CompetitorSource.winner(matchId));
+    }
+    for (
+      var index = pairedCompetitorCount;
+      index < competitors.length;
+      index++
+    ) {
+      openingRound.add(_CompetitorSource.direct(index));
+    }
+
+    var currentRound = openingRound;
 
     while (currentRound.length > 1) {
       final nextRound = <_CompetitorSource>[];

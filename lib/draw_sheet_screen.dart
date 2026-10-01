@@ -134,14 +134,11 @@ class DrawSheetContent extends StatelessWidget {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Expanded(
-                      flex: 7,
                       child: _BracketPanel(
                         title: 'Main Draw',
                         rounds: model.mainRounds,
                       ),
                     ),
-                    const SizedBox(width: 16),
-                    const Expanded(flex: 3, child: SizedBox.shrink()),
                   ],
                 ),
                 const SizedBox(height: 16),
@@ -462,7 +459,14 @@ class _BracketPanel extends StatelessWidget {
                           child: _RoundColumn(
                             round: round,
                             compact: compact,
-                            topInset: _topInsetFor(index),
+                            topInset:
+                                _topInsetFor(index) +
+                                (index > 0 &&
+                                        rounds[index - 1]
+                                                .loserArrowAfterIndex !=
+                                            null
+                                    ? 14
+                                    : 0),
                             matchGap: _matchGapFor(index),
                           ),
                         ),
@@ -520,22 +524,45 @@ class _RoundColumn extends StatelessWidget {
         SizedBox(height: topInset),
         ...List<Widget>.generate(round.matches.length, (index) {
           final match = round.matches[index];
+          final showLoserArrow = round.loserArrowAfterIndex == index;
           return Padding(
             padding: EdgeInsets.only(
-              bottom: index == round.matches.length - 1 ? 0 : matchGap,
+              bottom: index == round.matches.length - 1
+                  ? 0
+                  : matchGap + (showLoserArrow ? 28 : 0),
             ),
-            child: _MatchTile(
-              competitorANumber: match.competitorANumber,
-              competitorBNumber: match.competitorBNumber,
-              topMarker: match.topMarker,
-              bottomMarker: match.bottomMarker,
-              competitorASubscript: match.competitorASubscript,
-              competitorBSubscript: match.competitorBSubscript,
-              details: match.details,
-              compact: compact,
+            child: Column(
+              children: [
+                _MatchTile(
+                  competitorANumber: match.competitorANumber,
+                  competitorBNumber: match.competitorBNumber,
+                  topMarker: match.topMarker,
+                  bottomMarker: match.bottomMarker,
+                  competitorASubscript: match.competitorASubscript,
+                  competitorBSubscript: match.competitorBSubscript,
+                  details: match.details,
+                  compact: compact,
+                ),
+                if (showLoserArrow) const _LoserFeedArrow(),
+              ],
             ),
           );
         }),
+      ],
+    );
+  }
+}
+
+class _LoserFeedArrow extends StatelessWidget {
+  const _LoserFeedArrow();
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Text('Loser', style: Theme.of(context).textTheme.bodySmall),
+        const Icon(Icons.arrow_downward, size: 16),
       ],
     );
   }
@@ -900,15 +927,30 @@ class _DrawSheetModel {
           (record) => record.roundLabel.toLowerCase().startsWith('repechage'),
         )
         .toList();
+    final mainRounds = competitors.length == 3
+        ? _threeCompetitorRounds(
+            division: division,
+            competitors: competitors,
+            records: mainRecords,
+            byId: byId,
+          )
+        : competitors.length > 3
+        ? _plannedBracketRounds(
+            competitors: competitors,
+            records: mainRecords,
+            byId: byId,
+            competitionType: division.competitionType,
+          )
+        : _toRounds(
+            mainRecords,
+            byId,
+            competitors: competitors,
+            competitionType: division.competitionType,
+            isMain: true,
+          );
 
     return _DrawSheetModel(
-      mainRounds: _toRounds(
-        mainRecords,
-        byId,
-        competitors: competitors,
-        competitionType: division.competitionType,
-        isMain: true,
-      ),
+      mainRounds: mainRounds,
       repechageRounds: _ensureRepechageFinal(
         _toRounds(
           repechageRecords,
@@ -920,6 +962,296 @@ class _DrawSheetModel {
       ),
       placements: division.placements,
       competitorById: byId,
+    );
+  }
+
+  static List<_RoundData> _threeCompetitorRounds({
+    required Division division,
+    required List<Competitor> competitors,
+    required List<DivisionMatchRecord> records,
+    required Map<String, Competitor> byId,
+  }) {
+    final firstRecord = _recordForId(records, 'match_1');
+    final validFirstRecord =
+        firstRecord != null &&
+            _recordMatchesPair(
+              firstRecord,
+              competitors[0].id,
+              competitors[1].id,
+            )
+        ? firstRecord
+        : null;
+    final firstWinnerId = validFirstRecord?.winnerId;
+    final firstLoserId = validFirstRecord?.loserId;
+
+    final secondRecord = _recordForId(records, 'match_2');
+    final validSecondRecord =
+        secondRecord != null &&
+            firstLoserId != null &&
+            _recordMatchesPair(secondRecord, firstLoserId, competitors[2].id)
+        ? secondRecord
+        : null;
+    final secondWinnerId = validSecondRecord?.winnerId;
+
+    final finalRecord = _recordForId(records, 'match_3');
+    final validFinalRecord =
+        finalRecord != null &&
+            firstWinnerId != null &&
+            secondWinnerId != null &&
+            _recordMatchesPair(finalRecord, firstWinnerId, secondWinnerId)
+        ? finalRecord
+        : null;
+
+    final firstMatch = validFirstRecord == null
+        ? _plannedMatchData(competitors[0], competitors[1])
+        : _matchDataForRecord(validFirstRecord, byId, division.competitionType);
+    final secondMatch = validSecondRecord == null
+        ? _plannedMatchData(
+            competitors[2],
+            firstLoserId == null ? null : byId[firstLoserId],
+          )
+        : _matchDataForRecord(
+            validSecondRecord,
+            byId,
+            division.competitionType,
+            topCompetitorId: competitors[2].id,
+            bottomCompetitorId: firstLoserId,
+          );
+    final finalMatch = validFinalRecord == null
+        ? _plannedMatchData(
+            firstWinnerId == null ? null : byId[firstWinnerId],
+            secondWinnerId == null ? null : byId[secondWinnerId],
+          )
+        : _matchDataForRecord(validFinalRecord, byId, division.competitionType);
+
+    return <_RoundData>[
+      _RoundData(
+        label: 'Semifinal',
+        displayLabel: 'Semi-Finals',
+        matches: <_MatchData>[firstMatch, secondMatch],
+        loserArrowAfterIndex: 0,
+      ),
+      _RoundData(
+        label: 'Final',
+        displayLabel: 'Finals',
+        matches: <_MatchData>[finalMatch],
+      ),
+    ];
+  }
+
+  static List<_RoundData> _plannedBracketRounds({
+    required List<Competitor> competitors,
+    required List<DivisionMatchRecord> records,
+    required Map<String, Competitor> byId,
+    required CompetitionType competitionType,
+  }) {
+    final bracketSize = competitors.length < 8 ? 8 : 16;
+    final byeCount = bracketSize - competitors.length;
+    final pairedCompetitorCount = competitors.length - byeCount;
+    final recordById = <String, DivisionMatchRecord>{
+      for (final record in records) record.matchId: record,
+    };
+    final rounds = <_RoundData>[];
+    var matchCounter = 1;
+
+    List<_MatchData> buildRoundMatches(
+      List<String?> competitorIds,
+      List<String?> nextAdvancers,
+    ) {
+      final matches = <_MatchData>[];
+      for (var index = 0; index < competitorIds.length; index += 2) {
+        final competitorAId = competitorIds[index];
+        final competitorBId = competitorIds[index + 1];
+        final matchId = 'match_$matchCounter';
+        matchCounter += 1;
+
+        final record = recordById[matchId];
+        final validRecord =
+            competitorAId != null &&
+                competitorBId != null &&
+                record != null &&
+                _recordMatchesPair(record, competitorAId, competitorBId)
+            ? record
+            : null;
+        if (validRecord != null) {
+          matches.add(_matchDataForRecord(validRecord, byId, competitionType));
+          nextAdvancers.add(validRecord.winnerId);
+        } else {
+          matches.add(
+            _plannedMatchData(
+              competitorAId == null ? null : byId[competitorAId],
+              competitorBId == null ? null : byId[competitorBId],
+            ),
+          );
+          nextAdvancers.add(null);
+        }
+      }
+      return matches;
+    }
+
+    final firstRoundAdvancers = <String?>[];
+    final firstRoundIds = <String?>[];
+    for (var index = 0; index < pairedCompetitorCount; index++) {
+      firstRoundIds.add(competitors[index].id);
+    }
+    for (
+      var index = pairedCompetitorCount;
+      index < competitors.length;
+      index++
+    ) {
+      firstRoundIds
+        ..add(competitors[index].id)
+        ..add(null);
+    }
+    while (firstRoundIds.length < bracketSize) {
+      firstRoundIds.add(null);
+    }
+    final firstRoundMatches = <_MatchData>[];
+    for (var index = 0; index < firstRoundIds.length; index += 2) {
+      final competitorAId = firstRoundIds[index];
+      final competitorBId = firstRoundIds[index + 1];
+      if (competitorAId == null || competitorBId == null) {
+        final byeCompetitorId = competitorAId ?? competitorBId;
+        final byeCompetitor = byeCompetitorId == null
+            ? null
+            : byId[byeCompetitorId];
+        firstRoundMatches.add(
+          _plannedMatchData(
+            byeCompetitor,
+            null,
+            topMarker: byeCompetitor == null
+                ? _MarkerType.none
+                : _MarkerType.winner,
+            topSubscript: byeCompetitor == null ? null : 'BYE advance',
+            bottomSubscript: byeCompetitor == null ? null : 'BYE',
+            winnerNumber: byeCompetitor?.number ?? '',
+          ),
+        );
+        firstRoundAdvancers.add(byeCompetitorId);
+        continue;
+      }
+
+      final matchId = 'match_$matchCounter';
+      matchCounter += 1;
+      final record = recordById[matchId];
+      final validRecord =
+          record != null &&
+              _recordMatchesPair(record, competitorAId, competitorBId)
+          ? record
+          : null;
+      if (validRecord != null) {
+        firstRoundMatches.add(
+          _matchDataForRecord(validRecord, byId, competitionType),
+        );
+        firstRoundAdvancers.add(validRecord.winnerId);
+      } else {
+        firstRoundMatches.add(
+          _plannedMatchData(byId[competitorAId], byId[competitorBId]),
+        );
+        firstRoundAdvancers.add(null);
+      }
+    }
+
+    rounds.add(
+      _RoundData(
+        label: _plannedRoundLabel(bracketSize),
+        displayLabel: _displayRoundLabel(_plannedRoundLabel(bracketSize)),
+        matches: firstRoundMatches,
+      ),
+    );
+
+    var currentRound = firstRoundAdvancers;
+    while (currentRound.length > 1) {
+      final nextAdvancers = <String?>[];
+      final matches = buildRoundMatches(currentRound, nextAdvancers);
+      final roundLabel = _plannedRoundLabel(currentRound.length);
+      rounds.add(
+        _RoundData(
+          label: roundLabel,
+          displayLabel: _displayRoundLabel(roundLabel),
+          matches: matches,
+        ),
+      );
+      currentRound = nextAdvancers;
+    }
+
+    return rounds;
+  }
+
+  static DivisionMatchRecord? _recordForId(
+    List<DivisionMatchRecord> records,
+    String matchId,
+  ) {
+    for (final record in records) {
+      if (record.matchId == matchId) {
+        return record;
+      }
+    }
+    return null;
+  }
+
+  static bool _recordMatchesPair(
+    DivisionMatchRecord record,
+    String competitorAId,
+    String competitorBId,
+  ) {
+    return (record.competitorAId == competitorAId &&
+            record.competitorBId == competitorBId) ||
+        (record.competitorAId == competitorBId &&
+            record.competitorBId == competitorAId);
+  }
+
+  static _MatchData _plannedMatchData(
+    Competitor? competitorA,
+    Competitor? competitorB, {
+    _MarkerType topMarker = _MarkerType.none,
+    _MarkerType bottomMarker = _MarkerType.none,
+    String? topSubscript,
+    String? bottomSubscript,
+    String winnerNumber = '',
+  }) {
+    return _MatchData(
+      competitorANumber: competitorA?.number ?? '',
+      competitorBNumber: competitorB?.number ?? '',
+      topMarker: topMarker,
+      bottomMarker: bottomMarker,
+      competitorASubscript: topSubscript,
+      competitorBSubscript: bottomSubscript,
+      details: null,
+      winnerNumber: winnerNumber,
+    );
+  }
+
+  static _MatchData _matchDataForRecord(
+    DivisionMatchRecord record,
+    Map<String, Competitor> byId,
+    CompetitionType competitionType, {
+    String? topCompetitorId,
+    String? bottomCompetitorId,
+  }) {
+    final topId = topCompetitorId ?? record.competitorAId;
+    final bottomId = bottomCompetitorId ?? record.competitorBId;
+    return _MatchData(
+      competitorANumber: byId[topId]?.number ?? '',
+      competitorBNumber: byId[bottomId]?.number ?? '',
+      topMarker: record.winnerId == topId
+          ? _MarkerType.winner
+          : _MarkerType.loser,
+      bottomMarker: record.winnerId == bottomId
+          ? _MarkerType.winner
+          : _MarkerType.loser,
+      competitorASubscript: _competitorSubscript(
+        record: record,
+        competitorId: topId,
+        competitionType: competitionType,
+      ),
+      competitorBSubscript: _competitorSubscript(
+        record: record,
+        competitorId: bottomId,
+        competitionType: competitionType,
+      ),
+      details: _matchDetails(record),
+      winnerNumber: byId[record.winnerId]?.number ?? '',
     );
   }
 
@@ -1140,6 +1472,19 @@ class _DrawSheetModel {
     return label;
   }
 
+  static String _plannedRoundLabel(int roundSize) {
+    switch (roundSize) {
+      case 2:
+        return 'Final';
+      case 4:
+        return 'Semifinal';
+      case 8:
+        return 'Quarterfinal';
+      default:
+        return 'Round of $roundSize';
+    }
+  }
+
   static int _roundRank(String label, {required bool isMain}) {
     final lower = label.toLowerCase();
     if (!isMain && lower.startsWith('repechage round')) {
@@ -1199,11 +1544,13 @@ class _RoundData {
   final String label;
   final String displayLabel;
   final List<_MatchData> matches;
+  final int? loserArrowAfterIndex;
 
   const _RoundData({
     required this.label,
     String? displayLabel,
     required this.matches,
+    this.loserArrowAfterIndex,
   }) : displayLabel = displayLabel ?? label;
 }
 
