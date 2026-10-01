@@ -29,7 +29,7 @@ class _DivisionRegistrationScreenState
   final competitorNumberController = TextEditingController();
   String? selectedTatamiName;
   String? editingDivisionId;
-  final Set<String> selectedCompetitorIds = <String>{};
+  final List<String> selectedCompetitorIds = <String>[];
   bool isSubmitting = false;
 
   bool get isEditing => editingDivisionId != null;
@@ -544,27 +544,79 @@ class _DivisionRegistrationScreenState
                                 if (selected.isEmpty)
                                   const Text('No competitors selected yet.')
                                 else
-                                  ...selected.indexed.map(
-                                    (entry) => ListTile(
-                                      contentPadding: EdgeInsets.zero,
-                                      leading: CircleAvatar(
-                                        child: Text('${entry.$1 + 1}'),
-                                      ),
-                                      title: Text(
-                                        '${entry.$2.number} - ${entry.$2.name}',
-                                      ),
-                                      subtitle: Text(
-                                        '${entry.$2.belt} belt, ${entry.$2.gender.label}, age ${entry.$2.age}',
-                                      ),
-                                      trailing: IconButton(
-                                        icon: const Icon(Icons.close),
-                                        onPressed: isSubmitting
-                                            ? null
-                                            : () => _removeCompetitor(
-                                                entry.$2.id,
+                                  ReorderableListView.builder(
+                                    shrinkWrap: true,
+                                    physics:
+                                        const NeverScrollableScrollPhysics(),
+                                    buildDefaultDragHandles: false,
+                                    itemCount: selected.length,
+                                    onReorderItem: (oldIndex, newIndex) {
+                                      if (isSubmitting) {
+                                        return;
+                                      }
+                                      setState(() {
+                                        final competitorId =
+                                            selectedCompetitorIds.removeAt(
+                                              oldIndex,
+                                            );
+                                        selectedCompetitorIds.insert(
+                                          newIndex,
+                                          competitorId,
+                                        );
+                                      });
+                                    },
+                                    itemBuilder: (context, index) {
+                                      final competitor = selected[index];
+                                      return ListTile(
+                                        key: ValueKey(competitor.id),
+                                        contentPadding: EdgeInsets.zero,
+                                        leading: CircleAvatar(
+                                          child: Text('${index + 1}'),
+                                        ),
+                                        title: Text(
+                                          '${competitor.number} - ${competitor.name}',
+                                        ),
+                                        subtitle: Text(
+                                          '${competitor.belt} belt, ${competitor.gender.label}, age ${competitor.age}',
+                                        ),
+                                        trailing: Wrap(
+                                          spacing: 0,
+                                          crossAxisAlignment:
+                                              WrapCrossAlignment.center,
+                                          children: [
+                                            IconButton(
+                                              tooltip: 'Remove competitor',
+                                              icon: const Icon(Icons.close),
+                                              onPressed: isSubmitting
+                                                  ? null
+                                                  : () => _removeCompetitor(
+                                                      competitor.id,
+                                                    ),
+                                            ),
+                                            ReorderableDragStartListener(
+                                              index: index,
+                                              child: Tooltip(
+                                                message:
+                                                    'Reorder draw sheet position',
+                                                child: Padding(
+                                                  padding:
+                                                      const EdgeInsets.all(12),
+                                                  child: Icon(
+                                                    Icons.drag_handle,
+                                                    color: isSubmitting
+                                                        ? Theme.of(context)
+                                                              .disabledColor
+                                                        : Theme.of(context)
+                                                              .colorScheme
+                                                              .onSurfaceVariant,
+                                                  ),
+                                                ),
                                               ),
-                                      ),
-                                    ),
+                                            ),
+                                          ],
+                                        ),
+                                      );
+                                    },
                                   ),
                                 const SizedBox(height: 16),
                                 Row(
@@ -599,9 +651,12 @@ class _DivisionRegistrationScreenState
                             child: Column(
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
-                                Row(
-                                  mainAxisAlignment:
-                                      MainAxisAlignment.spaceBetween,
+                                Wrap(
+                                  spacing: 8,
+                                  runSpacing: 4,
+                                  alignment: WrapAlignment.spaceBetween,
+                                  crossAxisAlignment:
+                                      WrapCrossAlignment.center,
                                   children: [
                                     Text(
                                       'Suggested competitors in range',
@@ -609,20 +664,14 @@ class _DivisionRegistrationScreenState
                                           .textTheme
                                           .titleMedium,
                                     ),
-                                    Wrap(
-                                      spacing: 8,
-                                      children: [
-                                        TextButton(
-                                          onPressed:
-                                              suggestions.isEmpty ||
-                                                  isSubmitting
-                                              ? null
-                                              : _addSuggestedCompetitors,
-                                          child: const Text(
-                                            'Add All Suggestions',
-                                          ),
-                                        ),
-                                      ],
+                                    TextButton(
+                                      onPressed:
+                                          suggestions.isEmpty || isSubmitting
+                                          ? null
+                                          : _addSuggestedCompetitors,
+                                      child: const Text(
+                                        'Add All Suggestions',
+                                      ),
                                     ),
                                   ],
                                 ),

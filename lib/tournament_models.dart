@@ -790,7 +790,11 @@ const List<String> beltOrder = <String>[
 ];
 
 int beltToRank(String belt) {
-  switch (belt.trim().toLowerCase()) {
+  final normalizedBelt = belt.trim().toLowerCase();
+  if (normalizedBelt.startsWith('kiddies - ')) {
+    return 2;
+  }
+  switch (normalizedBelt) {
     case 'none':
       return 0;
     case 'white':

@@ -927,6 +927,9 @@ class _DrawSheetModel {
           (record) => record.roundLabel.toLowerCase().startsWith('repechage'),
         )
         .toList();
+    final repechageCompetitors = competitors.length > 4
+        ? _repechageCompetitors(mainRecords, byId)
+        : const <Competitor>[];
     final mainRounds = competitors.length == 3
         ? _threeCompetitorRounds(
             division: division,
@@ -948,21 +951,126 @@ class _DrawSheetModel {
             competitionType: division.competitionType,
             isMain: true,
           );
+    final repechageRounds = switch (repechageCompetitors.length) {
+      3 => _threeCompetitorRepechageRounds(
+        competitors: repechageCompetitors,
+        records: repechageRecords,
+        byId: byId,
+        competitionType: division.competitionType,
+      ),
+      > 3 => _plannedBracketRounds(
+        competitors: repechageCompetitors,
+        records: repechageRecords,
+        byId: byId,
+        competitionType: division.competitionType,
+        matchIdPrefix: 'repechage_',
+        isRepechage: true,
+        includeFinalRound: false,
+      ),
+      _ => _toRounds(
+        repechageRecords,
+        byId,
+        competitors: competitors,
+        competitionType: division.competitionType,
+        isMain: false,
+      ),
+    };
 
     return _DrawSheetModel(
       mainRounds: mainRounds,
-      repechageRounds: _ensureRepechageFinal(
-        _toRounds(
-          repechageRecords,
-          byId,
-          competitors: competitors,
-          competitionType: division.competitionType,
-          isMain: false,
-        ),
-      ),
+      repechageRounds: repechageRounds,
       placements: division.placements,
       competitorById: byId,
     );
+  }
+
+  static List<Competitor> _repechageCompetitors(
+    List<DivisionMatchRecord> mainRecords,
+    Map<String, Competitor> byId,
+  ) {
+    final finalRecord = mainRecords.cast<DivisionMatchRecord?>().firstWhere(
+      (record) => record?.roundLabel.toLowerCase() == 'final',
+      orElse: () => null,
+    );
+    final finalistIds = finalRecord == null
+        ? mainRecords
+              .where((record) => record.roundLabel.toLowerCase() == 'semifinal')
+              .map((record) => record.winnerId)
+              .toList()
+        : <String>[finalRecord.competitorAId, finalRecord.competitorBId];
+    if (finalistIds.length < 2) {
+      return const <Competitor>[];
+    }
+
+    final candidates = <Competitor>[];
+    final seen = <String>{};
+    for (final finalistId in finalistIds) {
+      for (final record in mainRecords.reversed) {
+        if (record.roundLabel.toLowerCase() == 'final' ||
+            record.winnerId != finalistId) {
+          continue;
+        }
+        final opponent = byId[record.loserId];
+        if (opponent != null && seen.add(opponent.id)) {
+          candidates.add(opponent);
+        }
+      }
+    }
+    return candidates;
+  }
+
+  static List<_RoundData> _threeCompetitorRepechageRounds({
+    required List<Competitor> competitors,
+    required List<DivisionMatchRecord> records,
+    required Map<String, Competitor> byId,
+    required CompetitionType competitionType,
+  }) {
+    final firstRecord = _recordForId(records, 'repechage_1');
+    final validFirstRecord =
+        firstRecord != null &&
+            _recordMatchesPair(
+              firstRecord,
+              competitors[0].id,
+              competitors[1].id,
+            )
+        ? firstRecord
+        : null;
+    final firstLoserId = validFirstRecord?.loserId;
+    final secondRecord = _recordForId(records, 'repechage_2');
+    final validSecondRecord =
+        secondRecord != null &&
+            firstLoserId != null &&
+            _recordMatchesPair(secondRecord, firstLoserId, competitors[2].id)
+        ? secondRecord
+        : null;
+
+    return <_RoundData>[
+      _RoundData(
+        label: 'Repechage Round 1',
+        matches: <_MatchData>[
+          validFirstRecord == null
+              ? _plannedMatchData(competitors[0], competitors[1])
+              : _matchDataForRecord(validFirstRecord, byId, competitionType),
+        ],
+      ),
+      _RoundData(
+        label: 'Repechage Round 2',
+        matches: <_MatchData>[
+          validSecondRecord == null
+              ? _plannedMatchData(
+                  firstLoserId == null ? null : byId[firstLoserId],
+                  competitors[2],
+                )
+              : _matchDataForRecord(
+                  validSecondRecord,
+                  byId,
+                  competitionType,
+                  topCompetitorId: firstLoserId,
+                  bottomCompetitorId: competitors[2].id,
+                ),
+        ],
+      ),
+    ];
   }
 
   static List<_RoundData> _threeCompetitorRounds({
@@ -1044,8 +1152,15 @@ class _DrawSheetModel {
     required List<DivisionMatchRecord> records,
     required Map<String, Competitor> byId,
     required CompetitionType competitionType,
+    String matchIdPrefix = 'match_',
+    bool isRepechage = false,
+    bool includeFinalRound = true,
   }) {
-    final bracketSize = competitors.length < 8 ? 8 : 16;
+    final bracketSize = competitors.length == 4
+        ? 4
+        : competitors.length < 8
+        ? 8
+        : 16;
     final byeCount = bracketSize - competitors.length;
     final pairedCompetitorCount = competitors.length - byeCount;
     final recordById = <String, DivisionMatchRecord>{
@@ -1062,7 +1177,7 @@ class _DrawSheetModel {
       for (var index = 0; index < competitorIds.length; index += 2) {
         final competitorAId = competitorIds[index];
         final competitorBId = competitorIds[index + 1];
-        final matchId = 'match_$matchCounter';
+        final matchId = '$matchIdPrefix$matchCounter';
         matchCounter += 1;
 
         final record = recordById[matchId];
@@ -1131,7 +1246,7 @@ class _DrawSheetModel {
         continue;
       }
 
-      final matchId = 'match_$matchCounter';
+      final matchId = '$matchIdPrefix$matchCounter';
       matchCounter += 1;
       final record = recordById[matchId];
       final validRecord =
@@ -1154,25 +1269,33 @@ class _DrawSheetModel {
 
     rounds.add(
       _RoundData(
-        label: _plannedRoundLabel(bracketSize),
-        displayLabel: _displayRoundLabel(_plannedRoundLabel(bracketSize)),
+        label: isRepechage
+            ? 'Repechage Round 1'
+            : _plannedRoundLabel(bracketSize),
+        displayLabel: isRepechage
+            ? 'Repechage Round 1'
+            : _displayRoundLabel(_plannedRoundLabel(bracketSize)),
         matches: firstRoundMatches,
       ),
     );
 
     var currentRound = firstRoundAdvancers;
-    while (currentRound.length > 1) {
+    var roundNumber = 2;
+    while (currentRound.length > (includeFinalRound ? 1 : 2)) {
       final nextAdvancers = <String?>[];
       final matches = buildRoundMatches(currentRound, nextAdvancers);
       final roundLabel = _plannedRoundLabel(currentRound.length);
       rounds.add(
         _RoundData(
-          label: roundLabel,
-          displayLabel: _displayRoundLabel(roundLabel),
+          label: isRepechage ? 'Repechage Round $roundNumber' : roundLabel,
+          displayLabel: isRepechage
+              ? 'Repechage Round $roundNumber'
+              : _displayRoundLabel(roundLabel),
           matches: matches,
         ),
       );
       currentRound = nextAdvancers;
+      roundNumber += 1;
     }
 
     return rounds;
@@ -1253,47 +1376,6 @@ class _DrawSheetModel {
       details: _matchDetails(record),
       winnerNumber: byId[record.winnerId]?.number ?? '',
     );
-  }
-
-  static List<_RoundData> _ensureRepechageFinal(List<_RoundData> rounds) {
-    if (rounds.isEmpty) {
-      return rounds;
-    }
-    final hasFinal = rounds.any(
-      (round) => round.label.toLowerCase().contains('repechage final'),
-    );
-    if (hasFinal) {
-      return rounds;
-    }
-
-    if (rounds.length == 1 && rounds.first.matches.length == 1) {
-      return <_RoundData>[
-        _RoundData(label: 'Repechage Final', matches: rounds.first.matches),
-      ];
-    }
-
-    final previousRound = rounds.last;
-    final topNumber = previousRound.matches.isNotEmpty
-        ? previousRound.matches.first.winnerNumber
-        : '';
-    final bottomNumber = previousRound.matches.length > 1
-        ? previousRound.matches[1].winnerNumber
-        : '';
-    final finalMatch = _MatchData(
-      competitorANumber: topNumber,
-      competitorBNumber: bottomNumber,
-      topMarker: _MarkerType.none,
-      bottomMarker: _MarkerType.none,
-      competitorASubscript: null,
-      competitorBSubscript: null,
-      details: null,
-      winnerNumber: '',
-    );
-
-    return <_RoundData>[
-      ...rounds,
-      _RoundData(label: 'Repechage Final', matches: <_MatchData>[finalMatch]),
-    ];
   }
 
   static List<_RoundData> _toRounds(
@@ -1463,8 +1545,8 @@ class _DrawSheetModel {
 
   static String _displayRoundLabel(String label) {
     final lower = label.toLowerCase();
-    if (lower == 'round of 3') {
-      return 'Semifinal';
+    if (lower == 'semifinal' || lower == 'round of 3') {
+      return 'Semi-Finals';
     }
     if (lower == 'round of 7') {
       return 'Quarterfinal';

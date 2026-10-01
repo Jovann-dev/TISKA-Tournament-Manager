@@ -234,20 +234,6 @@ class _CompetitionExecutionScreenState
     ];
   }
 
-  bool get _usesExtendedFlagBracket {
-    switch (widget.division.competitionType) {
-      case CompetitionType.kata:
-      case CompetitionType.onTheSpotJodanChudanKumite:
-      case CompetitionType.steppingJodanChudanKumite:
-      case CompetitionType.kihonIpponKumite:
-      case CompetitionType.kihonSanbonKumite:
-      case CompetitionType.jiyuIpponKumite:
-        return true;
-      case CompetitionType.jiyuKumite:
-        return false;
-    }
-  }
-
   bool get _isJiyuKumite =>
       widget.division.competitionType == CompetitionType.jiyuKumite;
 
@@ -791,7 +777,7 @@ class _CompetitionExecutionScreenState
   }
 
   void _ensureRepechagePlan(Map<String, _RecordedMatch> results) {
-    if (!_usesExtendedFlagBracket || _planCompetitors.length <= 4) {
+    if (_planCompetitors.length <= 4) {
       return;
     }
     if (_repechageMatches.isNotEmpty || _repechageFinalistSources.isNotEmpty) {
@@ -799,6 +785,10 @@ class _CompetitionExecutionScreenState
     }
     final finalMatch = _plan.matchById(_plan.finalMatchId);
     if (finalMatch == null) {
+      return;
+    }
+    if (_resolveSource(finalMatch.competitorA, results) == null ||
+        _resolveSource(finalMatch.competitorB, results) == null) {
       return;
     }
 
@@ -831,52 +821,79 @@ class _CompetitionExecutionScreenState
       return;
     }
 
+    if (candidateSources.length == 3) {
+      const firstMatchId = 'repechage_1';
+      const secondMatchId = 'repechage_2';
+      _repechageMatches.addAll(<_PlannedMatch>[
+        _PlannedMatch(
+          id: firstMatchId,
+          roundLabel: 'Repechage Round 1',
+          competitorA: candidateSources[0],
+          competitorB: candidateSources[1],
+        ),
+        _PlannedMatch(
+          id: secondMatchId,
+          roundLabel: 'Repechage Round 2',
+          competitorA: _CompetitorSource.loser(firstMatchId),
+          competitorB: candidateSources[2],
+        ),
+      ]);
+      _repechageFinalistSources = <_CompetitorSource>[
+        _CompetitorSource.winner(firstMatchId),
+        _CompetitorSource.winner(secondMatchId),
+      ];
+      return;
+    }
+
     var roundNumber = 1;
     var matchCounter = 1;
-    var currentRound = List<_CompetitorSource>.from(candidateSources);
+    final bracketSize = candidateSources.length == 4
+        ? 4
+        : candidateSources.length < 8
+        ? 8
+        : 16;
+    final byeCount = bracketSize - candidateSources.length;
+    final pairedCompetitorCount = candidateSources.length - byeCount;
+    var currentRound = <_CompetitorSource>[];
+    for (var index = 0; index < pairedCompetitorCount; index += 2) {
+      final matchId = 'repechage_$matchCounter';
+      matchCounter += 1;
+      _repechageMatches.add(
+        _PlannedMatch(
+          id: matchId,
+          roundLabel: 'Repechage Round $roundNumber',
+          competitorA: candidateSources[index],
+          competitorB: candidateSources[index + 1],
+        ),
+      );
+      currentRound.add(_CompetitorSource.winner(matchId));
+    }
+    for (
+      var index = pairedCompetitorCount;
+      index < candidateSources.length;
+      index++
+    ) {
+      currentRound.add(candidateSources[index]);
+    }
+
     while (currentRound.length > 2) {
       final nextRound = <_CompetitorSource>[];
-      String? previousMatchId;
       var index = 0;
       while (index < currentRound.length) {
         final competitorA = currentRound[index];
-        if (index + 1 < currentRound.length) {
-          final competitorB = currentRound[index + 1];
-          final matchId = 'repechage_$matchCounter';
-          matchCounter += 1;
-          _repechageMatches.add(
-            _PlannedMatch(
-              id: matchId,
-              roundLabel: 'Repechage Round $roundNumber',
-              competitorA: competitorA,
-              competitorB: competitorB,
-            ),
-          );
-          nextRound.add(_CompetitorSource.winner(matchId));
-          previousMatchId = matchId;
-          index += 2;
-          continue;
-        }
-
-        if (previousMatchId == null) {
-          nextRound.add(competitorA);
-          index += 1;
-          continue;
-        }
-
-        final feedInMatchId = 'repechage_$matchCounter';
+        final competitorB = currentRound[index + 1];
+        final matchId = 'repechage_$matchCounter';
         matchCounter += 1;
         _repechageMatches.add(
           _PlannedMatch(
-            id: feedInMatchId,
+            id: matchId,
             roundLabel: 'Repechage Round $roundNumber',
             competitorA: competitorA,
-            competitorB: _CompetitorSource.loser(previousMatchId),
+            competitorB: competitorB,
           ),
         );
-        nextRound.add(_CompetitorSource.winner(feedInMatchId));
-        previousMatchId = feedInMatchId;
-        index += 1;
+        nextRound.add(_CompetitorSource.winner(matchId));
+        index += 2;
       }
       currentRound = nextRound;
       roundNumber += 1;
@@ -1312,16 +1329,17 @@ class _CompetitionExecutionScreenState
     }
 
     final thirdPlaceIds = <String>[];
+    final fourthPlaceIds = <String>[];
     final seen = <String>{finalMatch.winner.id, finalMatch.loser.id};
 
-    if (_usesExtendedFlagBracket && _planCompetitors.length > 4) {
+    if (_planCompetitors.length > 4) {
       for (final source in _repechageFinalistSources) {
         final competitor = _resolveSource(source, results);
         if (competitor == null) {
           continue;
         }
         if (seen.add(competitor.id)) {
-          thirdPlaceIds.add(competitor.id);
+          fourthPlaceIds.add(competitor.id);
         }
       }
     } else {
@@ -1353,6 +1371,14 @@ class _CompetitionExecutionScreenState
               ? '3rd Place'
               : '3rd Place (Joint)',
           competitorIds: thirdPlaceIds,
+        ),
+      );
+    }
+    if (fourthPlaceIds.isNotEmpty) {
+      placements.add(
+        DivisionPlacement(
+          placeLabel: '4th Place (Joint)',
+          competitorIds: fourthPlaceIds,
         ),
       );
     }
@@ -1781,10 +1807,10 @@ class _FlagVotingEditorState extends State<_FlagVotingEditor> {
   void initState() {
     super.initState();
     _shiroController = TextEditingController(
-      text: widget.competitorAFlags.toString(),
+      text: (widget.judgesCount - widget.competitorAFlags).toString(),
     );
     _akaController = TextEditingController(
-      text: (widget.judgesCount - widget.competitorAFlags).toString(),
+      text: widget.competitorAFlags.toString(),
     );
   }
 
@@ -1804,19 +1830,17 @@ class _FlagVotingEditorState extends State<_FlagVotingEditor> {
     super.dispose();
   }
 
-  void _syncControllers(int shiroFlags) {
-    final clampedShiro = shiroFlags.clamp(0, widget.judgesCount);
-    final akaFlags = widget.judgesCount - clampedShiro;
+  void _syncControllers(int akaFlags) {
+    final clampedAka = akaFlags.clamp(0, widget.judgesCount);
+    final shiroFlags = widget.judgesCount - clampedAka;
     _isSyncing = true;
     _shiroController.value = TextEditingValue(
-      text: clampedShiro.toString(),
-      selection: TextSelection.collapsed(
-        offset: clampedShiro.toString().length,
-      ),
+      text: shiroFlags.toString(),
+      selection: TextSelection.collapsed(offset: shiroFlags.toString().length),
     );
     _akaController.value = TextEditingValue(
-      text: akaFlags.toString(),
-      selection: TextSelection.collapsed(offset: akaFlags.toString().length),
+      text: clampedAka.toString(),
+      selection: TextSelection.collapsed(offset: clampedAka.toString().length),
     );
     _isSyncing = false;
   }
@@ -1829,9 +1853,10 @@ class _FlagVotingEditorState extends State<_FlagVotingEditor> {
     if (parsed == null) {
       return;
     }
-    final clamped = parsed.clamp(0, widget.judgesCount);
-    _syncControllers(clamped);
-    widget.onChanged(clamped);
+    final shiroFlags = parsed.clamp(0, widget.judgesCount);
+    final akaFlags = widget.judgesCount - shiroFlags;
+    _syncControllers(akaFlags);
+    widget.onChanged(akaFlags);
   }
 
   void _updateFromAka(String value) {
@@ -1843,9 +1868,8 @@ class _FlagVotingEditorState extends State<_FlagVotingEditor> {
       return;
     }
     final clamped = parsed.clamp(0, widget.judgesCount);
-    final shiroFlags = widget.judgesCount - clamped;
-    _syncControllers(shiroFlags);
-    widget.onChanged(shiroFlags);
+    _syncControllers(clamped);
+    widget.onChanged(clamped);
   }
 
   Widget _buildSideField({
@@ -1897,8 +1921,8 @@ class _FlagVotingEditorState extends State<_FlagVotingEditor> {
 
   @override
   Widget build(BuildContext context) {
-    final shiroFlags = int.tryParse(_shiroController.text.trim()) ?? 0;
-    final akaFlags = widget.judgesCount - shiroFlags;
+    final akaFlags = int.tryParse(_akaController.text.trim()) ?? 0;
+    final shiroFlags = widget.judgesCount - akaFlags;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -1910,7 +1934,7 @@ class _FlagVotingEditorState extends State<_FlagVotingEditor> {
               context: context,
               title: 'Shiro',
               sideLabel: 'White - Left',
-              competitorName: widget.competitorAName,
+              competitorName: widget.competitorBName,
               controller: _shiroController,
               onChanged: _updateFromShiro,
               accentColor: const Color(0xFF314E8A),
@@ -1920,7 +1944,7 @@ class _FlagVotingEditorState extends State<_FlagVotingEditor> {
               context: context,
               title: 'Aka',
               sideLabel: 'Red - Right',
-              competitorName: widget.competitorBName,
+              competitorName: widget.competitorAName,
               controller: _akaController,
               onChanged: _updateFromAka,
               accentColor: const Color(0xFFB03030),
@@ -2253,7 +2277,11 @@ class _CompetitionPlan {
     final matches = <_PlannedMatch>[];
     final semifinalIds = <String>[];
     var matchCounter = 1;
-    final bracketSize = competitors.length < 8 ? 8 : 16;
+    final bracketSize = competitors.length == 4
+        ? 4
+        : competitors.length < 8
+        ? 8
+        : 16;
     final byeCount = bracketSize - competitors.length;
     final pairedCompetitorCount = competitors.length - byeCount;
     final openingRound = <_CompetitorSource>[];

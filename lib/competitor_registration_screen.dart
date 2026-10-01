@@ -100,6 +100,17 @@ class CompetitorRegistrationScreen extends StatefulWidget {
 
 class _CompetitorRegistrationScreenState
     extends State<CompetitorRegistrationScreen> {
+  static const List<String> _kiddiesBelts = <String>[
+    'White',
+    'Yellow',
+    'Orange',
+    'Green',
+    'Blue',
+    'Purple',
+    'Red',
+    'Black',
+  ];
+
   final numberController = TextEditingController();
   final nameController = TextEditingController();
   final birthYearController = TextEditingController();
@@ -108,6 +119,7 @@ class _CompetitorRegistrationScreenState
 
   Gender selectedGender = Gender.male;
   String selectedBelt = beltOrder.first;
+  String selectedKiddiesBelt = 'White';
   String? editingCompetitorId;
   int? selectedBirthYear;
   String? _activeSpreadsheetPath;
@@ -135,6 +147,9 @@ class _CompetitorRegistrationScreenState
     final club = clubController.text.trim();
     final birthYear = int.tryParse(birthYearController.text.trim());
     final age = _calculateAgeFromBirthYear(birthYear);
+    final belt = selectedBelt == 'Kiddies'
+        ? 'Kiddies - $selectedKiddiesBelt'
+        : selectedBelt;
 
     if (number.isEmpty || name.isEmpty || age == null) {
       _showMessage('Enter a competitor number, name, and valid birth year.');
@@ -157,8 +172,8 @@ class _CompetitorRegistrationScreenState
           DateTime.now().microsecondsSinceEpoch.toString(),
       number: number,
       name: name,
-      belt: selectedBelt,
-      beltRank: beltToRank(selectedBelt),
+      belt: belt,
+      beltRank: beltToRank(belt),
       gender: selectedGender,
       age: age,
       birthDate: DateTime(birthYear!, 1, 1),
@@ -206,7 +221,19 @@ class _CompetitorRegistrationScreenState
       birthYearController.text = selectedBirthYear.toString();
       clubController.text = competitor.club;
       selectedGender = competitor.gender;
-      selectedBelt = competitor.belt;
+      final normalizedBelt = competitor.belt.trim();
+      if (normalizedBelt.toLowerCase().startsWith('kiddies - ')) {
+        selectedBelt = 'Kiddies';
+        final kiddiesBelt = normalizedBelt.substring('Kiddies - '.length);
+        selectedKiddiesBelt = _kiddiesBelts.contains(kiddiesBelt)
+            ? kiddiesBelt
+            : 'White';
+      } else {
+        selectedBelt = beltOrder.contains(normalizedBelt)
+            ? normalizedBelt
+            : 'White';
+        selectedKiddiesBelt = 'White';
+      }
     });
   }
 
@@ -219,6 +246,7 @@ class _CompetitorRegistrationScreenState
     selectedBirthYear = null;
     selectedGender = Gender.male;
     selectedBelt = beltOrder.first;
+    selectedKiddiesBelt = 'White';
   }
 
   int? _calculateAgeFromBirthYear(int? birthYear) {
@@ -606,10 +634,41 @@ class _CompetitorRegistrationScreenState
                                   if (value != null) {
                                     setState(() {
                                       selectedBelt = value;
+                                      if (value != 'Kiddies') {
+                                        selectedKiddiesBelt = 'White';
+                                      }
                                     });
                                   }
                                 },
                         ),
+                        if (selectedBelt == 'Kiddies') ...[
+                          const SizedBox(height: 12),
+                          DropdownButtonFormField<String>(
+                            initialValue: selectedKiddiesBelt,
+                            decoration: const InputDecoration(
+                              labelText: 'Kiddies Belt Color',
+                              helperText: 'Select the competitor’s belt color.',
+                              border: OutlineInputBorder(),
+                            ),
+                            items: _kiddiesBelts
+                                .map(
+                                  (belt) => DropdownMenuItem<String>(
+                                    value: belt,
+                                    child: Text(belt),
+                                  ),
+                                )
+                                .toList(),
+                            onChanged: isSubmitting
+                                ? null
+                                : (value) {
+                                    if (value != null) {
+                                      setState(() {
+                                        selectedKiddiesBelt = value;
+                                      });
+                                    }
+                                  },
+                          ),
+                        ],
                         const SizedBox(height: 12),
                         DropdownButtonFormField<Gender>(
                           initialValue: selectedGender,
