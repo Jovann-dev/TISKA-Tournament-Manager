@@ -83,9 +83,16 @@ class DrawSheetContent extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final competitorById = <String, Competitor>{
+      for (final competitor in competitors) competitor.id: competitor,
+    };
+    final orderedCompetitors = division.competitorIds
+        .map((id) => competitorById[id])
+        .whereType<Competitor>()
+        .toList();
     final model = _DrawSheetModel.fromDivision(
       division: division,
-      competitors: competitors,
+      competitors: orderedCompetitors,
     );
     final pageBackground = printFriendly
         ? Colors.white
@@ -109,7 +116,7 @@ class DrawSheetContent extends StatelessWidget {
                       flex: 7,
                       child: _HeaderCard(
                         division: division,
-                        competitors: competitors,
+                        competitors: orderedCompetitors,
                       ),
                     ),
                     const SizedBox(width: 16),
@@ -985,13 +992,11 @@ class _DrawSheetModel {
 
     final rounds = <_RoundData>[];
     List<String?> previousRoundAdvancers = const <String?>[];
-    List<String?> previousRoundLosers = const <String?>[];
     int? previousExpectedMatches;
     for (var labelIndex = 0; labelIndex < labels.length; labelIndex++) {
       final label = labels[labelIndex];
       final roundRecords = grouped[label]!;
       final winnerIds = <String?>[];
-      final loserIds = <String?>[];
       final matchData = roundRecords
           .map(
             (record) => _MatchData(
@@ -1019,43 +1024,22 @@ class _DrawSheetModel {
           )
           .toList();
       winnerIds.addAll(roundRecords.map((record) => record.winnerId));
-      loserIds.addAll(roundRecords.map((record) => record.loserId));
 
       int? expectedMatches;
       List<String?> byeAdvancers = <String?>[];
 
       final isFirstMainRound = isMain && labelIndex == 0;
-      if (isFirstMainRound &&
-          competitors.length > 4 &&
-          competitors.length.isOdd) {
+      if (isFirstMainRound && competitors.length > 4) {
         expectedMatches = (competitors.length + 1) ~/ 2;
-        if (competitors.length > 2 && expectedMatches.isOdd) {
-          expectedMatches += 1;
+        if (competitors.length.isOdd) {
+          byeAdvancers = <String?>[competitors.last.id];
         }
-        final recordedCompetitorIds = roundRecords
-            .expand(
-              (record) => <String>[record.competitorAId, record.competitorBId],
-            )
-            .toSet();
-        final byeCandidates = competitors
-            .where(
-              (competitor) => !recordedCompetitorIds.contains(competitor.id),
-            )
-            .map((competitor) => competitor.id)
-            .toList();
-
-        byeAdvancers = List<String?>.from(byeCandidates);
       } else if (isMain && previousExpectedMatches != null) {
         expectedMatches = (previousExpectedMatches / 2).ceil();
-        final usedIds = roundRecords
-            .expand(
-              (record) => <String>[record.competitorAId, record.competitorBId],
-            )
-            .toSet();
-        byeAdvancers = previousRoundAdvancers
-            .where((competitorId) => competitorId != null)
-            .where((competitorId) => !usedIds.contains(competitorId!))
-            .toList();
+        if (previousRoundAdvancers.length.isOdd &&
+            previousRoundAdvancers.isNotEmpty) {
+          byeAdvancers = <String?>[previousRoundAdvancers.last];
+        }
       }
 
       if (isMain && expectedMatches != null) {
@@ -1063,45 +1047,38 @@ class _DrawSheetModel {
           final byeCompetitorId = byeAdvancers.isNotEmpty
               ? byeAdvancers.removeAt(0)
               : null;
-          final sourceSlot = byeCompetitorId == null
-              ? -1
-              : previousRoundAdvancers.indexOf(byeCompetitorId);
-          final feedLoserId = (!isFirstMainRound && sourceSlot > 0)
-              ? previousRoundLosers[sourceSlot - 1]
-              : null;
           final byeCompetitor = byeCompetitorId == null
               ? null
               : byId[byeCompetitorId];
-          final feedLoser = feedLoserId == null ? null : byId[feedLoserId];
-          final hasFeedLoser = feedLoser != null;
           matchData.add(
             _MatchData(
               competitorANumber: byeCompetitor?.number ?? '',
-              competitorBNumber: hasFeedLoser ? feedLoser.number : '',
-              topMarker: _MarkerType.winner,
-              bottomMarker: _MarkerType.loser,
+              competitorBNumber: '',
+              topMarker: byeCompetitor == null
+                  ? _MarkerType.none
+                  : _MarkerType.winner,
+              bottomMarker: byeCompetitor == null
+                  ? _MarkerType.none
+                  : _MarkerType.loser,
               competitorASubscript: byeCompetitor == null
-                  ? 'BYE auto-advance'
+                  ? null
                   : 'BYE advance',
-              competitorBSubscript: hasFeedLoser ? 'Loser feed-in' : 'BYE',
+              competitorBSubscript: byeCompetitor == null ? null : 'BYE',
               details: null,
               winnerNumber: byeCompetitor?.number ?? '',
             ),
           );
           winnerIds.add(byeCompetitorId);
-          loserIds.add(feedLoserId);
         }
 
         previousExpectedMatches = expectedMatches;
       }
 
       previousRoundAdvancers = winnerIds;
-      previousRoundLosers = loserIds;
 
       if (!isMain) {
         previousExpectedMatches = null;
         previousRoundAdvancers = const <String?>[];
-        previousRoundLosers = const <String?>[];
       }
 
       rounds.add(

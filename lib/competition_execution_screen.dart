@@ -2210,6 +2210,35 @@ class _CompetitionPlan {
         semifinalMatchIds: <String>[],
       );
     }
+    if (competitors.length == 3) {
+      const firstMatchId = 'match_1';
+      const thirdPlaceMatchId = 'match_2';
+      const finalMatchId = 'match_3';
+      return _CompetitionPlan(
+        matches: <_PlannedMatch>[
+          const _PlannedMatch(
+            id: firstMatchId,
+            roundLabel: 'Opening Match',
+            competitorA: _CompetitorSource.direct(0),
+            competitorB: _CompetitorSource.direct(1),
+          ),
+          const _PlannedMatch(
+            id: thirdPlaceMatchId,
+            roundLabel: 'Loser Qualifier',
+            competitorA: _CompetitorSource.loser(firstMatchId),
+            competitorB: _CompetitorSource.direct(2),
+          ),
+          const _PlannedMatch(
+            id: finalMatchId,
+            roundLabel: 'Final',
+            competitorA: _CompetitorSource.winner(firstMatchId),
+            competitorB: _CompetitorSource.winner(thirdPlaceMatchId),
+          ),
+        ],
+        finalMatchId: finalMatchId,
+        semifinalMatchIds: <String>[thirdPlaceMatchId],
+      );
+    }
     final matches = <_PlannedMatch>[];
     final semifinalIds = <String>[];
     var matchCounter = 1;

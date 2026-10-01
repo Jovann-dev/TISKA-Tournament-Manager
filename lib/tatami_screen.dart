@@ -177,13 +177,13 @@ class _TatamiScreenState extends State<TatamiScreen> {
   }
 
   List<Competitor> _divisionCompetitors(Division division) {
-    final divisionCompetitors = _competitors
-        .where((competitor) => division.competitorIds.contains(competitor.id))
+    final competitorById = <String, Competitor>{
+      for (final competitor in _competitors) competitor.id: competitor,
+    };
+    return division.competitorIds
+        .map((id) => competitorById[id])
+        .whereType<Competitor>()
         .toList();
-    divisionCompetitors.sort(
-      (left, right) => left.number.compareTo(right.number),
-    );
-    return divisionCompetitors;
   }
 
   String _formatCompletedAt(int? timestamp) {

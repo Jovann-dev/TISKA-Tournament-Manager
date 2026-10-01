@@ -95,11 +95,26 @@ class _DivisionRegistrationScreenState
   }
 
   List<Competitor> get selectedCompetitors {
-    final selected = widget.competitors
-        .where((competitor) => selectedCompetitorIds.contains(competitor.id))
+    final competitorById = <String, Competitor>{
+      for (final competitor in widget.competitors) competitor.id: competitor,
+    };
+    return selectedCompetitorIds
+        .map((id) => competitorById[id])
+        .whereType<Competitor>()
         .toList();
-    selected.sort((left, right) => left.number.compareTo(right.number));
-    return selected;
+  }
+
+  Competitor? get competitorMatchingEntry {
+    final number = competitorNumberController.text.trim();
+    if (number.isEmpty) {
+      return null;
+    }
+    for (final competitor in widget.competitors) {
+      if (competitor.number == number) {
+        return competitor;
+      }
+    }
+    return null;
   }
 
   _DivisionCriteria? get derivedCriteria {
@@ -221,7 +236,7 @@ class _DivisionRegistrationScreenState
           createdAt:
               currentEditingDivision?.createdAt ??
               DateTime.now().millisecondsSinceEpoch,
-          competitorIds: selectedCompetitorIds.toList()..sort(),
+          competitorIds: selectedCompetitorIds.toList(),
           progress: currentEditingDivision?.progress ?? DivisionProgress.queued,
           startedAt: currentEditingDivision?.startedAt,
           completedAt: currentEditingDivision?.completedAt,
@@ -449,6 +464,7 @@ class _DivisionRegistrationScreenState
                                           labelText: 'Competitor Number',
                                           border: OutlineInputBorder(),
                                         ),
+                                        onChanged: (_) => setState(() {}),
                                         onSubmitted: (_) =>
                                             _addCompetitorByNumber(),
                                       ),
@@ -462,6 +478,23 @@ class _DivisionRegistrationScreenState
                                     ),
                                   ],
                                 ),
+                                if (competitorNumberController.text
+                                    .trim()
+                                    .isNotEmpty) ...[
+                                  const SizedBox(height: 6),
+                                  Text(
+                                    competitorMatchingEntry == null
+                                        ? 'No competitor found for this number.'
+                                        : '${competitorMatchingEntry!.number} - ${competitorMatchingEntry!.name}',
+                                    style: TextStyle(
+                                      color: competitorMatchingEntry == null
+                                          ? Theme.of(context).colorScheme.error
+                                          : Theme.of(context)
+                                                .colorScheme
+                                                .primary,
+                                    ),
+                                  ),
+                                ],
                                 const SizedBox(height: 12),
                                 DropdownButtonFormField<String>(
                                   initialValue: tatamiDropdownValue,
@@ -498,7 +531,7 @@ class _DivisionRegistrationScreenState
                                 ],
                                 const SizedBox(height: 16),
                                 Text(
-                                  'Selected competitors (${selected.length})',
+                                  'Draw sheet order (${selected.length})',
                                   style: Theme.of(context)
                                       .textTheme
                                       .titleMedium,
@@ -507,21 +540,24 @@ class _DivisionRegistrationScreenState
                                 if (selected.isEmpty)
                                   const Text('No competitors selected yet.')
                                 else
-                                  ...selected.map(
-                                    (competitor) => ListTile(
+                                  ...selected.indexed.map(
+                                    (entry) => ListTile(
                                       contentPadding: EdgeInsets.zero,
+                                      leading: CircleAvatar(
+                                        child: Text('${entry.$1 + 1}'),
+                                      ),
                                       title: Text(
-                                        '${competitor.number} - ${competitor.name}',
+                                        '${entry.$2.number} - ${entry.$2.name}',
                                       ),
                                       subtitle: Text(
-                                        '${competitor.belt} belt, ${competitor.gender.label}, age ${competitor.age}',
+                                        '${entry.$2.belt} belt, ${entry.$2.gender.label}, age ${entry.$2.age}',
                                       ),
                                       trailing: IconButton(
                                         icon: const Icon(Icons.close),
                                         onPressed: isSubmitting
                                             ? null
                                             : () => _removeCompetitor(
-                                                competitor.id,
+                                                entry.$2.id,
                                               ),
                                       ),
                                     ),

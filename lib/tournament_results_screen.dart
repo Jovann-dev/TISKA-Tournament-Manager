@@ -78,11 +78,13 @@ class _TournamentResultsScreenState extends State<TournamentResultsScreen> {
   }
 
   List<Competitor> _divisionCompetitors(Division division) {
-    final competitors = widget.competitors
-        .where((competitor) => division.competitorIds.contains(competitor.id))
+    final competitorById = <String, Competitor>{
+      for (final competitor in widget.competitors) competitor.id: competitor,
+    };
+    return division.competitorIds
+        .map((id) => competitorById[id])
+        .whereType<Competitor>()
         .toList();
-    competitors.sort((left, right) => left.number.compareTo(right.number));
-    return competitors;
   }
 
   Future<void> _showDivisionResults(Division division) {
