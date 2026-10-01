@@ -834,8 +834,8 @@ class _CompetitionExecutionScreenState
         _PlannedMatch(
           id: secondMatchId,
           roundLabel: 'Repechage Round 2',
-          competitorA: _CompetitorSource.loser(firstMatchId),
-          competitorB: candidateSources[2],
+          competitorA: candidateSources[2],
+          competitorB: _CompetitorSource.loser(firstMatchId),
         ),
       ]);
       _repechageFinalistSources = <_CompetitorSource>[
@@ -1903,6 +1903,7 @@ class _FlagVotingEditorState extends State<_FlagVotingEditor> {
             Text(competitorName, style: Theme.of(context).textTheme.bodySmall),
             const SizedBox(height: 10),
             TextField(
+              key: ValueKey('$title flags'),
               controller: controller,
               keyboardType: TextInputType.number,
               textAlign: TextAlign.center,
@@ -2260,8 +2261,8 @@ class _CompetitionPlan {
           const _PlannedMatch(
             id: thirdPlaceMatchId,
             roundLabel: 'Semifinal',
-            competitorA: _CompetitorSource.loser(firstMatchId),
-            competitorB: _CompetitorSource.direct(2),
+            competitorA: _CompetitorSource.direct(2),
+            competitorB: _CompetitorSource.loser(firstMatchId),
           ),
           const _PlannedMatch(
             id: finalMatchId,
@@ -2298,6 +2299,9 @@ class _CompetitionPlan {
           competitorB: _CompetitorSource.direct(index + 1),
         ),
       );
+      if (bracketSize == 4) {
+        semifinalIds.add(matchId);
+      }
       openingRound.add(_CompetitorSource.winner(matchId));
     }
     for (

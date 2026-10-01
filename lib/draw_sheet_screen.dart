@@ -1040,35 +1040,30 @@ class _DrawSheetModel {
     final validSecondRecord =
         secondRecord != null &&
             firstLoserId != null &&
-            _recordMatchesPair(secondRecord, firstLoserId, competitors[2].id)
+            _recordMatchesPair(secondRecord, competitors[2].id, firstLoserId)
         ? secondRecord
         : null;
+    final firstMatch = validFirstRecord == null
+        ? _plannedMatchData(competitors[0], competitors[1])
+        : _matchDataForRecord(validFirstRecord, byId, competitionType);
+    final secondMatch = validSecondRecord == null
+        ? _plannedMatchData(
+            byId[competitors[2].id],
+            firstLoserId == null ? null : byId[firstLoserId],
+          )
+        : _matchDataForRecord(
+            validSecondRecord,
+            byId,
+            competitionType,
+            topCompetitorId: competitors[2].id,
+            bottomCompetitorId: firstLoserId,
+          );
 
     return <_RoundData>[
       _RoundData(
-        label: 'Repechage Round 1',
-        matches: <_MatchData>[
-          validFirstRecord == null
-              ? _plannedMatchData(competitors[0], competitors[1])
-              : _matchDataForRecord(validFirstRecord, byId, competitionType),
-        ],
-      ),
-      _RoundData(
-        label: 'Repechage Round 2',
-        matches: <_MatchData>[
-          validSecondRecord == null
-              ? _plannedMatchData(
-                  firstLoserId == null ? null : byId[firstLoserId],
-                  competitors[2],
-                )
-              : _matchDataForRecord(
-                  validSecondRecord,
-                  byId,
-                  competitionType,
-                  topCompetitorId: firstLoserId,
-                  bottomCompetitorId: competitors[2].id,
-                ),
-        ],
+        label: 'Repechage',
+        matches: <_MatchData>[firstMatch, secondMatch],
+        loserArrowAfterIndex: 0,
       ),
     ];
   }

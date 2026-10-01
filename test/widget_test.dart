@@ -87,6 +87,40 @@ Widget _drawSheet(List<Competitor> competitors) {
   );
 }
 
+Widget _competitionExecution(
+  List<Competitor> competitors,
+  void Function(
+    List<DivisionMatchRecord> matchRecords,
+    List<DivisionPlacement> placements,
+  )
+  onSaved, {
+  Division? division,
+}) {
+  return MaterialApp(
+    home: CompetitionExecutionScreen(
+      tatamiName: 'Tatami 1',
+      division: division ?? _executionDivision(competitors),
+      competitors: competitors,
+      judgesCount: 5,
+      onJudgeCountChanged: (_, _) async {},
+      onStartDivision: (_, _) async {},
+      onCompleteDivision: (_, _) async {},
+      onSaveExecutionState:
+          (
+            _,
+            _, {
+            required matchRecords,
+            required placements,
+            logMessage,
+          }) async {
+            onSaved(matchRecords, placements);
+          },
+      onPublishLiveState: (_) {},
+      onSaveInProgressMatch: (_, _, _) async {},
+    ),
+  );
+}
+
 void main() {
   testWidgets('App starts with tournament access gate', (
     WidgetTester tester,
@@ -169,6 +203,210 @@ void main() {
       findsNWidgets(3),
     );
     expect(find.textContaining('Repechage Final'), findsNothing);
+  });
+
+  testWidgets('three-person execution assigns third entrant to Aka/top', (
+    WidgetTester tester,
+  ) async {
+    final competitors = _competitors(3);
+    var savedMatches = <DivisionMatchRecord>[];
+    var savedPlacements = <DivisionPlacement>[];
+    await tester.pumpWidget(
+      _competitionExecution(competitors, (matches, placements) {
+        savedMatches = matches;
+        savedPlacements = placements;
+      }),
+    );
+    await tester.pumpAndSettle();
+
+    for (var matchIndex = 0; matchIndex < 2; matchIndex++) {
+      final akaField = find.byKey(const ValueKey('Aka flags'));
+      await tester.ensureVisible(akaField);
+      await tester.enterText(akaField, '3');
+      await tester.pump();
+      expect(find.text('Shiro: 2   Aka: 3'), findsOneWidget);
+      final nextMatchButton = find.text('Next Match');
+      await tester.ensureVisible(nextMatchButton);
+      await tester.tap(nextMatchButton);
+      await tester.pumpAndSettle();
+    }
+
+    final secondMatch = savedMatches.singleWhere(
+      (record) => record.matchId == 'match_2',
+    );
+    expect(secondMatch.competitorAId, competitors[2].id);
+    expect(secondMatch.competitorBId, competitors[1].id);
+    expect(secondMatch.competitorAFlags, 3);
+    expect(secondMatch.competitorBFlags, 2);
+    expect(find.textContaining('3rd Place'), findsNothing);
+
+    final finalAkaField = find.byKey(const ValueKey('Aka flags'));
+    await tester.ensureVisible(finalAkaField);
+    await tester.enterText(finalAkaField, '3');
+    final recordFinalButton = find.text('Record Final Result');
+    await tester.ensureVisible(recordFinalButton);
+    await tester.tap(recordFinalButton);
+    await tester.pumpAndSettle();
+
+    expect(
+      savedPlacements.any(
+        (placement) =>
+            placement.placeLabel == '3rd Place' &&
+            placement.competitorIds.single == competitors[1].id,
+      ),
+      isTrue,
+    );
+  });
+
+  testWidgets('four-person execution records joint third place', (
+    WidgetTester tester,
+  ) async {
+    final competitors = _competitors(4);
+    var savedPlacements = <DivisionPlacement>[];
+    var savedMatches = <DivisionMatchRecord>[];
+    await tester.pumpWidget(
+      _competitionExecution(competitors, (matches, placements) {
+        savedMatches = matches;
+        savedPlacements = placements;
+      }),
+    );
+    await tester.pumpAndSettle();
+
+    for (var matchIndex = 0; matchIndex < 2; matchIndex++) {
+      final akaField = find.byKey(const ValueKey('Aka flags'));
+      await tester.ensureVisible(akaField);
+      await tester.enterText(akaField, '3');
+      await tester.pump();
+      expect(find.text('Shiro: 2   Aka: 3'), findsOneWidget);
+      final nextMatchButton = find.text('Next Match');
+      await tester.ensureVisible(nextMatchButton);
+      await tester.tap(nextMatchButton);
+      await tester.pumpAndSettle();
+    }
+
+    final finalAkaField = find.byKey(const ValueKey('Aka flags'));
+    await tester.ensureVisible(finalAkaField);
+    await tester.enterText(finalAkaField, '3');
+    final recordFinalButton = find.text('Record Final Result');
+    await tester.ensureVisible(recordFinalButton);
+    await tester.tap(recordFinalButton);
+    await tester.pumpAndSettle();
+
+    final firstSemifinal = savedMatches.singleWhere(
+      (record) => record.matchId == 'match_1',
+    );
+    final secondSemifinal = savedMatches.singleWhere(
+      (record) => record.matchId == 'match_2',
+    );
+    expect(firstSemifinal.competitorAId, competitors[0].id);
+    expect(firstSemifinal.competitorBId, competitors[1].id);
+    expect(firstSemifinal.competitorAFlags, 3);
+    expect(firstSemifinal.competitorBFlags, 2);
+    expect(secondSemifinal.competitorAId, competitors[2].id);
+    expect(secondSemifinal.competitorBId, competitors[3].id);
+    expect(secondSemifinal.competitorAFlags, 3);
+    expect(secondSemifinal.competitorBFlags, 2);
+
+    expect(
+      savedPlacements.any(
+        (placement) =>
+            placement.placeLabel == '3rd Place (Joint)' &&
+            placement.competitorIds.toSet().containsAll(<String>[
+              competitors[1].id,
+              competitors[3].id,
+            ]),
+      ),
+      isTrue,
+    );
+  });
+
+  testWidgets('three-person repechage draws the loser-feed match', (
+    WidgetTester tester,
+  ) async {
+    final competitors = _competitors(5);
+    final division = _divisionFor(competitors).copyWith(
+      matchRecords: <DivisionMatchRecord>[
+        _matchRecord('match_1', 'Quarterfinal', competitors[0], competitors[1]),
+        _matchRecord('match_2', 'Semifinal', competitors[0], competitors[2]),
+        _matchRecord('match_3', 'Semifinal', competitors[3], competitors[4]),
+        _matchRecord('match_4', 'Final', competitors[0], competitors[3]),
+        _matchRecord(
+          'repechage_1',
+          'Repechage Round 1',
+          competitors[2],
+          competitors[1],
+        ),
+      ],
+    );
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: DrawSheetContent(division: division, competitors: competitors),
+        ),
+      ),
+    );
+
+    final repechagePanel = find
+        .ancestor(of: find.text('Repechage'), matching: find.byType(Card))
+        .first;
+    expect(
+      find.descendant(
+        of: repechagePanel,
+        matching: find.byIcon(Icons.arrow_downward),
+      ),
+      findsOneWidget,
+    );
+    final thirdEntrant = find.descendant(
+      of: repechagePanel,
+      matching: find.text('5'),
+    );
+    final advancingLoser = find
+        .descendant(of: repechagePanel, matching: find.text('2'))
+        .last;
+    expect(
+      tester.getTopLeft(thirdEntrant).dy,
+      lessThan(tester.getTopLeft(advancingLoser).dy),
+    );
+  });
+
+  testWidgets('three-person repechage execution preserves Aka/Shiro order', (
+    WidgetTester tester,
+  ) async {
+    final competitors = _competitors(5);
+    var savedMatches = <DivisionMatchRecord>[];
+    final division = _executionDivision(competitors).copyWith(
+      matchRecords: <DivisionMatchRecord>[
+        _matchRecord('match_1', 'Quarterfinal', competitors[0], competitors[1]),
+        _matchRecord('match_2', 'Semifinal', competitors[0], competitors[2]),
+        _matchRecord('match_3', 'Semifinal', competitors[3], competitors[4]),
+      ],
+    );
+    await tester.pumpWidget(
+      _competitionExecution(competitors, (matches, _) {
+        savedMatches = matches;
+      }, division: division),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('Repechage Round 1'), findsOneWidget);
+    for (var matchIndex = 0; matchIndex < 2; matchIndex++) {
+      final akaField = find.byKey(const ValueKey('Aka flags'));
+      await tester.ensureVisible(akaField);
+      await tester.enterText(akaField, '3');
+      await tester.pump();
+      final nextMatchButton = find.text('Next Match');
+      await tester.ensureVisible(nextMatchButton);
+      await tester.tap(nextMatchButton);
+      await tester.pumpAndSettle();
+    }
+
+    final secondRepechageMatch = savedMatches.singleWhere(
+      (record) => record.matchId == 'repechage_2',
+    );
+    expect(secondRepechageMatch.competitorAId, competitors[4].id);
+    expect(secondRepechageMatch.competitorBId, competitors[1].id);
+    expect(secondRepechageMatch.competitorAFlags, 3);
+    expect(secondRepechageMatch.competitorBFlags, 2);
   });
 
   testWidgets('selecting Kiddies reveals a color belt selector', (
