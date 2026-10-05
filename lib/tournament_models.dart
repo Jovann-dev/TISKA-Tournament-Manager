@@ -687,6 +687,9 @@ class TatamiLogEntry {
   final String tatamiName;
   final String message;
   final String? divisionId;
+  final String? divisionTitle;
+  final String? activity;
+  final int? competitorCount;
   final int timestamp;
 
   const TatamiLogEntry({
@@ -695,6 +698,9 @@ class TatamiLogEntry {
     required this.message,
     required this.timestamp,
     this.divisionId,
+    this.divisionTitle,
+    this.activity,
+    this.competitorCount,
   });
 
   Map<String, Object?> toMap() {
@@ -703,6 +709,9 @@ class TatamiLogEntry {
       'tatamiName': tatamiName,
       'message': message,
       'divisionId': divisionId,
+      'divisionTitle': divisionTitle,
+      'activity': activity,
+      'competitorCount': competitorCount,
       'timestamp': timestamp,
     };
   }
@@ -713,6 +722,9 @@ class TatamiLogEntry {
       tatamiName: (map['tatamiName'] as String?) ?? '',
       message: (map['message'] as String?) ?? '',
       divisionId: map['divisionId'] as String?,
+      divisionTitle: map['divisionTitle'] as String?,
+      activity: map['activity'] as String?,
+      competitorCount: (map['competitorCount'] as num?)?.toInt(),
       timestamp: (map['timestamp'] as num?)?.toInt() ?? 0,
     );
   }

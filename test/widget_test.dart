@@ -5,14 +5,21 @@
 // gestures. You can also use WidgetTester to find child widgets in the widget
 // tree, read text, and verify that the values of widget properties are correct.
 
+import 'dart:isolate';
+
+import 'package:archive/archive.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:tiska_tournament_manager/competitor_registration_screen.dart';
+import 'package:tiska_tournament_manager/competitor_spreadsheet_codec.dart';
 import 'package:tiska_tournament_manager/competition_execution_screen.dart';
 import 'package:tiska_tournament_manager/division_registration_screen.dart';
 import 'package:tiska_tournament_manager/main.dart';
 import 'package:tiska_tournament_manager/draw_sheet_screen.dart';
+import 'package:tiska_tournament_manager/home_screen.dart';
+import 'package:tiska_tournament_manager/tournament_backend.dart';
 import 'package:tiska_tournament_manager/tournament_models.dart';
 
 List<Competitor> _competitors(int count) {
@@ -122,6 +129,156 @@ Widget _competitionExecution(
 }
 
 void main() {
+  test('draw-sheet ZIP contains only Tatami-grouped PNG images', () async {
+    final zipBytes = await compute(
+      encodeDrawSheetImageArchive,
+      <String, Uint8List>{
+        'Tatami 1/Division_A.png': Uint8List.fromList(<int>[1, 2, 3]),
+        'Tatami 2/Division_B.png': Uint8List.fromList(<int>[4, 5, 6]),
+      },
+    );
+    final archive = ZipDecoder().decodeBytes(zipBytes);
+
+    expect(archive.files.map((file) => file.name).toSet(), <String>{
+      'Tatami 1/Division_A.png',
+      'Tatami 2/Division_B.png',
+    });
+    expect(
+      archive.files.every((file) => file.name.toLowerCase().endsWith('.png')),
+      isTrue,
+    );
+  });
+
+  test('recent tournament list uses its creation time and 3-day cutoff', () {
+    final now = DateTime.utc(2026, 10, 1, 12);
+    final recent = tournamentsCreatedWithinLastThreeDays(
+      <TournamentRegistration>[
+        TournamentRegistration(
+          id: 'older',
+          password: 'p',
+          createdAt: now.subtract(const Duration(days: 4)),
+        ),
+        TournamentRegistration(
+          id: 'boundary',
+          password: 'p',
+          createdAt: now.subtract(const Duration(days: 3)),
+        ),
+        TournamentRegistration(
+          id: 'recent',
+          password: 'p',
+          createdAt: now.subtract(const Duration(hours: 12)),
+        ),
+        TournamentRegistration(
+          id: 'future',
+          password: 'p',
+          createdAt: now.add(const Duration(hours: 1)),
+        ),
+      ],
+      now: now,
+    );
+
+    expect(recent.map((tournament) => tournament.id), <String>[
+      'recent',
+      'boundary',
+    ]);
+  });
+
+  test('competitor XLSX codec round-trips all registration fields', () {
+    final source = Competitor(
+      id: 'stable-competitor-id',
+      number: '017',
+      name: 'Jordan Example',
+      belt: 'Kiddies - Purple',
+      beltRank: beltToRank('Kiddies - Purple'),
+      gender: Gender.female,
+      age: 17,
+      birthDate: DateTime(2009, 4, 12),
+      club: 'North Dojo',
+    );
+
+    final bytes = CompetitorSpreadsheetCodec.encode(<Competitor>[source]);
+    final imported = CompetitorSpreadsheetCodec.decode(
+      Uint8List.fromList(bytes),
+      referenceDate: DateTime(2026, 1, 1),
+    );
+
+    expect(imported, hasLength(1));
+    final roundTripped = imported.single;
+    expect(roundTripped.id, source.id);
+    expect(roundTripped.number, source.number);
+    expect(roundTripped.name, source.name);
+    expect(roundTripped.belt, source.belt);
+    expect(roundTripped.beltRank, source.beltRank);
+    expect(roundTripped.gender, source.gender);
+    expect(roundTripped.age, source.age);
+    expect(roundTripped.birthDate, source.birthDate);
+    expect(roundTripped.club, source.club);
+  });
+
+  test('competitor XLSX codec works through isolate execution', () async {
+    final source = _competitors(1).single.copyWith(
+      gender: Gender.female,
+      birthDate: DateTime(2010, 7, 9),
+      age: 16,
+      club: 'South Dojo',
+    );
+    final referenceDate = DateTime(2026, 1, 1);
+    final bytes = await Isolate.run(
+      () => CompetitorSpreadsheetCodec.encode(<Competitor>[source]),
+    );
+    final imported = await Isolate.run(
+      () => CompetitorSpreadsheetCodec.decode(
+        Uint8List.fromList(bytes),
+        referenceDate: referenceDate,
+      ),
+    );
+
+    expect(imported.single.id, source.id);
+    expect(imported.single.gender, Gender.female);
+    expect(imported.single.birthDate, DateTime(2010, 7, 9));
+    expect(imported.single.club, 'South Dojo');
+  });
+
+  test(
+    'competitor XLSX codec workers are compatible with Flutter compute',
+    () async {
+      final source = _competitors(1).single;
+      final bytes = await compute(
+        CompetitorSpreadsheetCodec.encode,
+        <Competitor>[source],
+      );
+      final imported = await compute(
+        CompetitorSpreadsheetCodec.decode,
+        Uint8List.fromList(bytes),
+      );
+
+      expect(imported.single.id, source.id);
+      expect(imported.single.number, source.number);
+    },
+  );
+
+  test('legacy competitor XLSX rows remain importable', () {
+    final imported = CompetitorSpreadsheetCodec.decodeRows(<List<String>>[
+      <String>['number', 'name', 'belt', 'birth_year', 'club'],
+      <String>['42', 'Legacy Competitor', 'Kiddies - Black', '2012', 'West'],
+    ], referenceDate: DateTime(2026, 1, 1));
+
+    expect(imported, hasLength(1));
+    expect(imported.single.number, '42');
+    expect(imported.single.gender, Gender.male);
+    expect(imported.single.beltRank, beltToRank('Kiddies'));
+    expect(imported.single.birthDate, DateTime(2012, 1, 1));
+    expect(imported.single.club, 'West');
+    expect(imported.single.id, isNotEmpty);
+
+    final existing = _competitors(1).single.copyWith(number: '42');
+    final reconciled = CompetitorSpreadsheetCodec.retainExistingIdsByNumber(
+      imported: imported,
+      existing: <Competitor>[existing],
+    );
+    expect(reconciled.single.id, existing.id);
+  });
+
   testWidgets('App starts with tournament access gate', (
     WidgetTester tester,
   ) async {
@@ -185,6 +342,24 @@ void main() {
         _matchRecord('match_5', 'Quarterfinal', competitors[7], competitors[8]),
         _matchRecord('match_6', 'Semifinal', competitors[0], competitors[3]),
         _matchRecord('match_7', 'Semifinal', competitors[7], competitors[5]),
+        _matchRecord(
+          'repechage_1',
+          'Repechage Round 1',
+          competitors[3],
+          competitors[2],
+        ),
+        _matchRecord(
+          'repechage_2',
+          'Repechage Round 2',
+          competitors[3],
+          competitors[1],
+        ),
+        _matchRecord(
+          'repechage_3',
+          'Repechage Round 2',
+          competitors[5],
+          competitors[8],
+        ),
       ],
     );
     await tester.pumpWidget(
@@ -198,11 +373,64 @@ void main() {
     final repechagePanel = find
         .ancestor(of: find.text('Repechage'), matching: find.byType(Card))
         .first;
+    final mainDrawPanel = find
+        .ancestor(of: find.text('Main Draw'), matching: find.byType(Card))
+        .first;
+    expect(
+      tester.getSize(repechagePanel).width,
+      tester.getSize(mainDrawPanel).width,
+    );
     expect(
       find.descendant(of: repechagePanel, matching: find.text('BYE advance')),
       findsNWidgets(3),
     );
+    final finalistsHeading = find.descendant(
+      of: repechagePanel,
+      matching: find.text('Finalists'),
+    );
+    expect(finalistsHeading, findsOneWidget);
+    final finalistsColumn = find
+        .ancestor(of: finalistsHeading, matching: find.byType(Column))
+        .first;
+    expect(
+      find.descendant(of: finalistsColumn, matching: find.text('4')),
+      findsOneWidget,
+    );
+    expect(
+      find.descendant(of: finalistsColumn, matching: find.text('6')),
+      findsOneWidget,
+    );
+    expect(
+      find.descendant(
+        of: finalistsColumn,
+        matching: find.textContaining('Flags'),
+      ),
+      findsNothing,
+    );
     expect(find.textContaining('Repechage Final'), findsNothing);
+  });
+
+  testWidgets('draw sheet shows Year and Floor once in the header', (
+    WidgetTester tester,
+  ) async {
+    await tester.pumpWidget(_drawSheet(_competitors(2)));
+
+    expect(find.text('Year: ${DateTime.now().year - 10}'), findsOneWidget);
+    expect(find.text('Floor: Tatami 1'), findsOneWidget);
+    expect(find.text('Tatami: Tatami 1'), findsNothing);
+  });
+
+  testWidgets('two-person division starts directly with its final', (
+    WidgetTester tester,
+  ) async {
+    final competitors = _competitors(2);
+    await tester.pumpWidget(_competitionExecution(competitors, (_, _) {}));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Final'), findsOneWidget);
+    expect(find.text('Round of 6'), findsNothing);
+    expect(find.text('1 - Competitor 1'), findsOneWidget);
+    expect(find.text('2 - Competitor 2'), findsOneWidget);
   });
 
   testWidgets('three-person execution assigns third entrant to Aka/top', (

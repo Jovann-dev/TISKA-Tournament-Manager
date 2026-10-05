@@ -2246,6 +2246,21 @@ class _CompetitionPlan {
         semifinalMatchIds: <String>[],
       );
     }
+    if (competitors.length == 2) {
+      const finalMatchId = 'match_1';
+      return _CompetitionPlan(
+        matches: <_PlannedMatch>[
+          const _PlannedMatch(
+            id: finalMatchId,
+            roundLabel: 'Final',
+            competitorA: _CompetitorSource.direct(0),
+            competitorB: _CompetitorSource.direct(1),
+          ),
+        ],
+        finalMatchId: finalMatchId,
+        semifinalMatchIds: <String>[],
+      );
+    }
     if (competitors.length == 3) {
       const firstMatchId = 'match_1';
       const thirdPlaceMatchId = 'match_2';

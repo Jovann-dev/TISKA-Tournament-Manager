@@ -1,8 +1,4 @@
 import 'dart:async';
-import 'dart:convert';
-import 'dart:io';
-
-import 'package:excel/excel.dart';
 
 import 'live_match_state.dart';
 import 'tournament_backend.dart';
@@ -359,110 +355,6 @@ class TournamentRepository {
     await _persist();
   }
 
-  Future<String> exportDrawSheetsToFolder(String folderPath) async {
-    final target = Directory(folderPath);
-    if (!await target.exists()) {
-      throw StateError('Selected folder does not exist.');
-    }
-
-    final files = buildTournamentExportFiles();
-    for (final entry in files.entries) {
-      final file = File('${target.path}${Platform.pathSeparator}${entry.key}');
-      await file.writeAsBytes(entry.value, flush: true);
-    }
-    return '${target.path}${Platform.pathSeparator}tournament_drawsheet_summary.json';
-  }
-
-  Map<String, List<int>> buildTournamentExportFiles() {
-    final files = <String, List<int>>{};
-
-    final byId = <String, Competitor>{
-      for (final competitor in _competitors) competitor.id: competitor,
-    };
-    final timestamp = DateTime.now().toIso8601String();
-    final summary = <String, Object?>{
-      'exportedAt': timestamp,
-      'competitorCount': _competitors.length,
-      'divisionCount': _divisions.length,
-      'divisions': _divisions
-          .map(
-            (division) => <String, Object?>{
-              'id': division.id,
-              'title': division.title,
-              'tatami': division.assignedTatamiName,
-              'progress': division.progress.storageValue,
-              'completedAt': division.completedAt,
-              'matchCount': division.matchRecords.length,
-            },
-          )
-          .toList(),
-    };
-
-    files['tournament_drawsheet_summary.json'] = utf8.encode(
-      const JsonEncoder.withIndent(' ').convert(summary),
-    );
-
-    final workbook = Excel.createExcel();
-    final defaultSheet = workbook.getDefaultSheet();
-    if (defaultSheet != null && defaultSheet != 'Competitors') {
-      workbook.rename(defaultSheet, 'Competitors');
-    }
-    final competitorsSheet = workbook['Competitors'];
-    competitorsSheet.appendRow(<CellValue?>[
-      TextCellValue('number'),
-      TextCellValue('name'),
-      TextCellValue('belt'),
-      TextCellValue('birth_year'),
-      TextCellValue('club'),
-    ]);
-    for (final competitor in _competitors) {
-      final birthYear =
-          competitor.birthDate?.year ?? (DateTime.now().year - competitor.age);
-      competitorsSheet.appendRow(<CellValue?>[
-        TextCellValue(competitor.number),
-        TextCellValue(competitor.name),
-        TextCellValue(competitor.belt),
-        IntCellValue(birthYear),
-        TextCellValue(competitor.club),
-      ]);
-    }
-    final workbookBytes = workbook.save();
-    if (workbookBytes == null) {
-      throw StateError('Unable to generate competitors XLSX file.');
-    }
-    files['competitors.xlsx'] = workbookBytes;
-
-    for (final division in _divisions) {
-      final divisionPayload = <String, Object?>{
-        'exportedAt': timestamp,
-        'division': <String, Object?>{
-          'id': division.id,
-          'title': division.title,
-          'data': division.toMap(),
-        },
-        'competitors': division.competitorIds
-            .map((id) => byId[id])
-            .whereType<Competitor>()
-            .map(
-              (competitor) => <String, Object?>{
-                'id': competitor.id,
-                'data': competitor.toMap(),
-              },
-            )
-            .toList(),
-      };
-
-      final fileName = _safeFileName(
-        '${division.assignedTatamiName}_${division.title}_${division.id}.json',
-      );
-      files[fileName] = utf8.encode(
-        const JsonEncoder.withIndent(' ').convert(divisionPayload),
-      );
-    }
-
-    return files;
-  }
-
   Future<void> saveDivision(Division division) {
     return _saveDivisionAndAssignment(division);
   }
@@ -506,14 +398,6 @@ class TournamentRepository {
       matchRecords: List<DivisionMatchRecord>.from(matchRecords),
       placements: List<DivisionPlacement>.from(placements),
     );
-    final effectiveLogMessage = logMessage != null && logMessage.isNotEmpty
-        ? logMessage
-        : (matchRecords.isNotEmpty || placements.isNotEmpty)
-        ? 'Results saved: ${_divisions[divisionIndex].title}'
-        : null;
-    if (effectiveLogMessage != null) {
-      _appendTatamiLog(tatamiName, divisionId, effectiveLogMessage);
-    }
     _emitDivisions();
     _emitTatamiLogs();
     await _persist();
@@ -542,6 +426,11 @@ class TournamentRepository {
     _tatamiAssignments[tatamiName] = TatamiAssignment(
       tatamiName: tatamiName,
       divisionId: divisionId,
+    );
+    _appendDivisionLifecycleLog(
+      tatamiName: tatamiName,
+      division: division,
+      activity: 'Started',
     );
     _emitDivisions();
     _emitTatami();
@@ -572,10 +461,10 @@ class TournamentRepository {
         divisionId: null,
       );
     }
-    _appendTatamiLog(
-      tatamiName,
-      divisionId,
-      'Division concluded: ${division.title}',
+    _appendDivisionLifecycleLog(
+      tatamiName: tatamiName,
+      division: division,
+      activity: 'Finished',
     );
     _emitDivisions();
     _emitTatami();
@@ -604,11 +493,6 @@ class TournamentRepository {
       placements: const <DivisionPlacement>[],
     );
     _divisions[divisionIndex] = division;
-    _appendTatamiLog(
-      tatamiName,
-      divisionId,
-      'Division selected to redo: ${division.title}',
-    );
     _emitDivisions();
     _emitTatami();
     _emitTatamiLogs();
@@ -616,20 +500,9 @@ class TournamentRepository {
   }
 
   Future<void> deleteDivision(String divisionId) async {
-    final removedDivision = _divisions.cast<Division?>().firstWhere(
-      (division) => division?.id == divisionId,
-      orElse: () => null,
-    );
     _divisions.removeWhere((division) => division.id == divisionId);
     for (final entry in _tatamiAssignments.entries) {
       if (entry.value.divisionId == divisionId) {
-        if (removedDivision != null) {
-          _appendTatamiLog(
-            entry.key,
-            divisionId,
-            'Division selected to delete: ${removedDivision.title}',
-          );
-        }
         _tatamiAssignments[entry.key] = entry.value.copyWith(divisionId: null);
       }
     }
@@ -670,20 +543,14 @@ class TournamentRepository {
       tatamiName: division.assignedTatamiName,
       divisionId: division.id,
     );
-    if (previousDivision == null) {
-      _appendTatamiLog(
-        division.assignedTatamiName,
-        division.id,
-        'Division assigned to this tatami: ${division.title}',
+    if (previousDivision != null &&
+        previousDivision.assignedTatamiName != division.assignedTatamiName) {
+      _appendDivisionLifecycleLog(
+        tatamiName: division.assignedTatamiName,
+        division: division,
+        activity:
+            'Moved ${previousDivision.assignedTatamiName} -> ${division.assignedTatamiName}',
       );
-    } else {
-      if (previousDivision.assignedTatamiName != division.assignedTatamiName) {
-        _appendTatamiLog(
-          division.assignedTatamiName,
-          division.id,
-          'Division moved to this tatami: ${division.title}',
-        );
-      }
     }
     _emitDivisions();
     _emitTatami();
@@ -700,22 +567,9 @@ class TournamentRepository {
     }
 
     if (divisionId != null) {
-      final division = _divisions.cast<Division?>().firstWhere(
-        (item) => item?.id == divisionId,
-        orElse: () => null,
-      );
       for (final entry in _tatamiAssignments.entries) {
         if (entry.value.divisionId == divisionId && entry.key != tatamiName) {
-          _tatamiAssignments[entry.key] = entry.value.copyWith(
-            divisionId: null,
-          );
-          if (division != null) {
-            _appendTatamiLog(
-              entry.key,
-              divisionId,
-              'Division reassigned away: ${division.title}',
-            );
-          }
+          _tatamiAssignments[entry.key] = entry.value.copyWith(divisionId: null);
         }
       }
 
@@ -723,13 +577,14 @@ class TournamentRepository {
         (division) => division.id == divisionId,
       );
       if (divisionIndex != -1) {
+        final previousTatami = _divisions[divisionIndex].assignedTatamiName;
         _divisions[divisionIndex] = _divisions[divisionIndex].copyWith(
           assignedTatamiName: tatamiName,
         );
-        _appendTatamiLog(
-          tatamiName,
-          divisionId,
-          'Division moved to this tatami: ${_divisions[divisionIndex].title}',
+        _appendDivisionLifecycleLog(
+          tatamiName: tatamiName,
+          division: _divisions[divisionIndex],
+          activity: 'Moved $previousTatami -> $tatamiName',
         );
       }
     }
@@ -1043,7 +898,29 @@ class TournamentRepository {
     };
   }
 
-  void _appendTatamiLog(String tatamiName, String? divisionId, String message) {
+  void _appendDivisionLifecycleLog({
+    required String tatamiName,
+    required Division division,
+    required String activity,
+  }) {
+    _appendTatamiLog(
+      tatamiName,
+      division.id,
+      '$activity: ${division.title} (${division.competitorIds.length} competitors)',
+      divisionTitle: division.title,
+      activity: activity,
+      competitorCount: division.competitorIds.length,
+    );
+  }
+
+  void _appendTatamiLog(
+    String tatamiName,
+    String? divisionId,
+    String message, {
+    String? divisionTitle,
+    String? activity,
+    int? competitorCount,
+  }) {
     final entries = _tatamiLogsByTatami.putIfAbsent(
       tatamiName,
       () => <TatamiLogEntry>[],
@@ -1055,6 +932,9 @@ class TournamentRepository {
         tatamiName: tatamiName,
         message: message,
         divisionId: divisionId,
+        divisionTitle: divisionTitle,
+        activity: activity,
+        competitorCount: competitorCount,
         timestamp: DateTime.now().millisecondsSinceEpoch,
       ),
     );
@@ -1074,7 +954,4 @@ class TournamentRepository {
         .toList();
   }
 
-  String _safeFileName(String value) {
-    return value.replaceAll(RegExp(r'[\\/:*?"<>|]'), '_');
-  }
 }

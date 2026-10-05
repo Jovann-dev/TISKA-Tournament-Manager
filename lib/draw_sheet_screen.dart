@@ -142,16 +142,9 @@ class DrawSheetContent extends StatelessWidget {
                   ],
                 ),
                 const SizedBox(height: 16),
-                Align(
-                  alignment: Alignment.centerRight,
-                  child: SizedBox(
-                    width: 420,
-                    child: _BracketPanel(
-                      title: 'Repechage',
-                      rounds: model.repechageRounds,
-                      compact: true,
-                    ),
-                  ),
+                _BracketPanel(
+                  title: 'Repechage',
+                  rounds: model.repechageRounds,
                 ),
               ],
             ),
@@ -286,12 +279,12 @@ class _HeaderCard extends StatelessWidget {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(
-                        'YEAR: $birthYearRange',
+                        'Year: $birthYearRange',
                         style: const TextStyle(fontSize: 11),
                       ),
                       const SizedBox(height: 8),
                       Text(
-                        'FLOOR: ${division.assignedTatamiName}',
+                        'Floor: ${division.assignedTatamiName}',
                         style: const TextStyle(fontSize: 11),
                       ),
                       const SizedBox(height: 8),
@@ -386,11 +379,6 @@ class _HeaderCard extends StatelessWidget {
             Row(
               children: [
                 Text(
-                  'Tatami: ${division.assignedTatamiName}',
-                  style: const TextStyle(fontSize: 11),
-                ),
-                const SizedBox(width: 14),
-                Text(
                   'Competitors: ${division.competitorIds.length}',
                   style: const TextStyle(fontSize: 11),
                 ),
@@ -413,17 +401,12 @@ class _HeaderCard extends StatelessWidget {
 class _BracketPanel extends StatelessWidget {
   final String title;
   final List<_RoundData> rounds;
-  final bool compact;
 
-  const _BracketPanel({
-    required this.title,
-    required this.rounds,
-    this.compact = false,
-  });
+  const _BracketPanel({required this.title, required this.rounds});
 
   @override
   Widget build(BuildContext context) {
-    final columnWidth = compact ? 130.0 : 160.0;
+    const columnWidth = 160.0;
     return Card(
       elevation: 1,
       shape: RoundedRectangleBorder(
@@ -458,7 +441,7 @@ class _BracketPanel extends StatelessWidget {
                           width: columnWidth,
                           child: _RoundColumn(
                             round: round,
-                            compact: compact,
+                            compact: false,
                             topInset:
                                 _topInsetFor(index) +
                                 (index > 0 &&
@@ -480,8 +463,7 @@ class _BracketPanel extends StatelessWidget {
   }
 
   double _topInsetFor(int roundIndex) {
-    final base = compact ? 10.0 : 14.0;
-    var inset = base;
+    var inset = 14.0;
     for (var index = 0; index < roundIndex; index++) {
       inset += _roundStrideFor(index) / 2;
     }
@@ -493,12 +475,11 @@ class _BracketPanel extends StatelessWidget {
   }
 
   double _roundStrideFor(int roundIndex) {
-    final baseStride = _matchVisualHeight() + (compact ? 10.0 : 14.0);
-    return baseStride * (1 << roundIndex);
+    return 88.0 * (1 << roundIndex);
   }
 
   double _matchVisualHeight() {
-    return compact ? 60.0 : 74.0;
+    return 74.0;
   }
 }
 
@@ -937,6 +918,13 @@ class _DrawSheetModel {
             records: mainRecords,
             byId: byId,
           )
+        : competitors.length == 2
+        ? _twoCompetitorRounds(
+            competitors: competitors,
+            records: mainRecords,
+            byId: byId,
+            competitionType: division.competitionType,
+          )
         : competitors.length > 3
         ? _plannedBracketRounds(
             competitors: competitors,
@@ -952,6 +940,7 @@ class _DrawSheetModel {
             isMain: true,
           );
     final repechageRounds = switch (repechageCompetitors.length) {
+      1 || 2 => _repechageFinalistsRound(repechageCompetitors),
       3 => _threeCompetitorRepechageRounds(
         competitors: repechageCompetitors,
         records: repechageRecords,
@@ -1019,6 +1008,23 @@ class _DrawSheetModel {
     return candidates;
   }
 
+  static List<_RoundData> _repechageFinalistsRound(
+    List<Competitor> competitors,
+  ) {
+    return <_RoundData>[
+      _RoundData(
+        label: 'Repechage Finalists',
+        displayLabel: 'Finalists',
+        matches: <_MatchData>[
+          _plannedMatchData(
+            competitors.first,
+            competitors.length > 1 ? competitors[1] : null,
+          ),
+        ],
+      ),
+    ];
+  }
+
   static List<_RoundData> _threeCompetitorRepechageRounds({
     required List<Competitor> competitors,
     required List<DivisionMatchRecord> records,
@@ -1058,12 +1064,45 @@ class _DrawSheetModel {
             topCompetitorId: competitors[2].id,
             bottomCompetitorId: firstLoserId,
           );
+    final finalists = _plannedMatchData(
+      validFirstRecord == null ? null : byId[validFirstRecord.winnerId],
+      validSecondRecord == null ? null : byId[validSecondRecord.winnerId],
+    );
 
     return <_RoundData>[
       _RoundData(
         label: 'Repechage',
         matches: <_MatchData>[firstMatch, secondMatch],
         loserArrowAfterIndex: 0,
+      ),
+      _RoundData(
+        label: 'Repechage Finalists',
+        displayLabel: 'Finalists',
+        matches: <_MatchData>[finalists],
+      ),
+    ];
+  }
+
+  static List<_RoundData> _twoCompetitorRounds({
+    required List<Competitor> competitors,
+    required List<DivisionMatchRecord> records,
+    required Map<String, Competitor> byId,
+    required CompetitionType competitionType,
+  }) {
+    final record = _recordForId(records, 'match_1');
+    final validRecord =
+        record != null &&
+            _recordMatchesPair(record, competitors[0].id, competitors[1].id)
+        ? record
+        : null;
+    return <_RoundData>[
+      _RoundData(
+        label: 'Final',
+        matches: <_MatchData>[
+          validRecord == null
+              ? _plannedMatchData(competitors[0], competitors[1])
+              : _matchDataForRecord(validRecord, byId, competitionType),
+        ],
       ),
     ];
   }
@@ -1291,6 +1330,21 @@ class _DrawSheetModel {
       );
       currentRound = nextAdvancers;
       roundNumber += 1;
+    }
+
+    if (isRepechage && !includeFinalRound && currentRound.length == 2) {
+      rounds.add(
+        _RoundData(
+          label: 'Repechage Finalists',
+          displayLabel: 'Finalists',
+          matches: <_MatchData>[
+            _plannedMatchData(
+              currentRound[0] == null ? null : byId[currentRound[0]],
+              currentRound[1] == null ? null : byId[currentRound[1]],
+            ),
+          ],
+        ),
+      );
     }
 
     return rounds;

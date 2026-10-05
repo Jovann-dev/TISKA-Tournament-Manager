@@ -1,82 +1,12 @@
 import 'dart:io';
-import 'dart:isolate';
-import 'dart:typed_data';
 
-import 'package:excel/excel.dart';
 import 'package:file_selector/file_selector.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import 'browser_download.dart';
+import 'competitor_spreadsheet_codec.dart';
 import 'tournament_models.dart';
-
-List<List<String>> _decodeXlsxRows(Uint8List bytes) {
-  final workbook = Excel.decodeBytes(bytes);
-  final sheets = workbook.tables.values.toList();
-  if (sheets.isEmpty) {
-    return const <List<String>>[];
-  }
-  return sheets.first.rows
-      .map((row) => row.map(_xlsxCellText).toList())
-      .toList();
-}
-
-String _xlsxCellText(Data? data) {
-  final value = data?.value;
-  if (value == null) {
-    return '';
-  }
-  if (value is TextCellValue) {
-    return value.value.text ?? value.value.toString();
-  }
-  if (value is IntCellValue) {
-    return value.value.toString();
-  }
-  if (value is DoubleCellValue) {
-    return value.value.toString();
-  }
-  if (value is BoolCellValue) {
-    return value.value.toString();
-  }
-  return value.toString();
-}
-
-List<int> _encodeCompetitorsXlsx(List<Map<String, Object>> competitors) {
-  final excel = Excel.createExcel();
-  final defaultSheet = excel.getDefaultSheet();
-  if (defaultSheet != null && defaultSheet != 'Competitors') {
-    excel.rename(defaultSheet, 'Competitors');
-  }
-  final sheet = excel['Competitors'];
-  sheet.appendRow(<CellValue?>[
-    TextCellValue('number'),
-    TextCellValue('name'),
-    TextCellValue('belt'),
-    TextCellValue('birth_year'),
-    TextCellValue('club'),
-  ]);
-  for (final competitor in competitors) {
-    sheet.appendRow(<CellValue?>[
-      TextCellValue(competitor['number']! as String),
-      TextCellValue(competitor['name']! as String),
-      TextCellValue(competitor['belt']! as String),
-      IntCellValue(competitor['birthYear']! as int),
-      TextCellValue(competitor['club']! as String),
-    ]);
-  }
-  final bytes = excel.save();
-  if (bytes == null) {
-    throw StateError('Unable to generate XLSX content.');
-  }
-  return bytes;
-}
-
-Future<T> _runXlsxWork<T>(T Function() action) async {
-  if (kIsWeb) {
-    return action();
-  }
-  return Isolate.run(action);
-}
 
 class CompetitorRegistrationScreen extends StatefulWidget {
   final List<Competitor> competitors;
@@ -284,20 +214,7 @@ class _CompetitorRegistrationScreenState
   }
 
   Future<void> _writeXlsx(String path, List<Competitor> competitors) async {
-    final data = competitors
-        .map(
-          (competitor) => <String, Object>{
-            'number': competitor.number,
-            'name': competitor.name,
-            'belt': competitor.belt,
-            'birthYear':
-                competitor.birthDate?.year ??
-                (DateTime.now().year - competitor.age),
-            'club': competitor.club,
-          },
-        )
-        .toList();
-    final bytes = await _runXlsxWork(() => _encodeCompetitorsXlsx(data));
+    final bytes = await compute(CompetitorSpreadsheetCodec.encode, competitors);
     if (kIsWeb) {
       await downloadBytes(
         fileName: path,
@@ -348,52 +265,14 @@ class _CompetitorRegistrationScreenState
       }
 
       final fileBytes = await file.readAsBytes();
-      final rows = await _runXlsxWork(() => _decodeXlsxRows(fileBytes));
-      if (rows.isEmpty) {
-        if (!mounted) {
-          return;
-        }
-        _showMessage('The XLSX file has no data rows.');
-        return;
-      }
-
-      final imported = <Competitor>[];
-      for (var i = 0; i < rows.length; i++) {
-        final row = rows[i];
-        if (row.isEmpty) {
-          continue;
-        }
-        final firstCell = row.first.trim().toLowerCase();
-        if (i == 0 && (firstCell == 'number' || firstCell == '#')) {
-          continue;
-        }
-
-        final number = row.isNotEmpty ? row[0].trim() : '';
-        final name = row.length > 1 ? row[1].trim() : '';
-        final belt = row.length > 2 ? row[2].trim() : '';
-        final birthRaw = row.length > 3 ? row[3].trim() : '';
-        final club = row.length > 4 ? row[4].trim() : '';
-
-        final parsedBirthYear = _parseBirthYear(birthRaw);
-        final age = _calculateAgeFromBirthYear(parsedBirthYear);
-        if (number.isEmpty || name.isEmpty || belt.isEmpty || age == null) {
-          continue;
-        }
-
-        imported.add(
-          Competitor(
-            id: '${DateTime.now().microsecondsSinceEpoch}_$i',
-            number: number,
-            name: name,
-            belt: belt,
-            beltRank: beltToRank(belt),
-            gender: Gender.male,
-            age: age,
-            birthDate: DateTime(parsedBirthYear!, 1, 1),
-            club: club,
-          ),
-        );
-      }
+      final decodedCompetitors = await compute(
+        CompetitorSpreadsheetCodec.decode,
+        fileBytes,
+      );
+      final imported = CompetitorSpreadsheetCodec.retainExistingIdsByNumber(
+        imported: decodedCompetitors,
+        existing: widget.competitors,
+      );
 
       if (imported.isEmpty) {
         if (!mounted) {
@@ -435,19 +314,6 @@ class _CompetitorRegistrationScreenState
         });
       }
     }
-  }
-
-  int? _parseBirthYear(String value) {
-    final trimmed = value.trim();
-    if (trimmed.isEmpty) {
-      return null;
-    }
-    final asYear = int.tryParse(trimmed);
-    if (asYear != null) {
-      return asYear;
-    }
-    final parsedDate = DateTime.tryParse(trimmed);
-    return parsedDate?.year;
   }
 
   Future<void> _createXlsxForRegistrations() async {

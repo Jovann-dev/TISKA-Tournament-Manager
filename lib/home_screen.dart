@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'dart:io';
-import 'dart:typed_data';
 
 import 'package:archive/archive.dart';
 import 'package:file_selector/file_selector.dart';
@@ -10,6 +9,7 @@ import 'package:screenshot/screenshot.dart';
 
 import 'browser_download.dart';
 import 'competitor_registration_screen.dart';
+import 'division_process_log_spreadsheet_codec.dart';
 import 'draw_sheet_screen.dart';
 import 'division_registration_screen.dart';
 import 'live_match_state.dart';
@@ -20,6 +20,18 @@ import 'tournament_access_screen.dart';
 import 'tournament_results_screen.dart';
 import 'tournament_models.dart';
 import 'tournament_repository.dart';
+
+List<int> encodeDrawSheetImageArchive(Map<String, Uint8List> images) {
+  final archive = Archive();
+  for (final entry in images.entries) {
+    archive.addFile(ArchiveFile(entry.key, entry.value.length, entry.value));
+  }
+  final bytes = ZipEncoder().encode(archive);
+  if (bytes == null) {
+    throw StateError('Unable to create the draw-sheet image ZIP file.');
+  }
+  return bytes;
+}
 
 class HomeScreen extends StatefulWidget {
   final String tournamentId;
@@ -46,12 +58,17 @@ class _HomeScreenState extends State<HomeScreen> {
   StreamSubscription<List<Competitor>>? _competitorsSubscription;
   StreamSubscription<List<Division>>? _divisionsSubscription;
   StreamSubscription<List<TatamiAssignment>>? _tatamiSubscription;
+  StreamSubscription<Map<String, List<TatamiLogEntry>>>?
+  _tatamiLogsSubscription;
+  Map<String, List<TatamiLogEntry>> _tatamiLogsByTatami =
+      const <String, List<TatamiLogEntry>>{};
   bool _tatamiNamesLoaded = false;
   bool _competitorsLoaded = false;
   bool _divisionsLoaded = false;
   bool _tatamiLoaded = false;
   bool _repositoryReady = false;
   bool _subscriptionsAttached = false;
+  bool _isSavingDrawSheets = false;
   String? _streamError;
 
   bool get _isLoading =>
@@ -120,6 +137,14 @@ class _HomeScreenState extends State<HomeScreen> {
       }
       setState(() {
         _tatamiLoaded = true;
+      });
+    }, onError: _handleStreamError);
+    _tatamiLogsSubscription = _repository.watchTatamiLogs().listen((logs) {
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _tatamiLogsByTatami = logs;
       });
     }, onError: _handleStreamError);
   }
@@ -218,59 +243,51 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Future<void> _saveDrawSheetsToFolder() async {
-    if (kIsWeb) {
-      await _saveDataForWeb();
-      return;
-    }
-    final selectedFolder = await getDirectoryPath(
-      confirmButtonText: 'Save Draw Sheets Here',
-    );
-    if (selectedFolder == null || selectedFolder.isEmpty) {
+    if (_isSavingDrawSheets) {
       return;
     }
 
+    setState(() {
+      _isSavingDrawSheets = true;
+    });
     try {
-      final summaryPath = await _repository.exportDrawSheetsToFolder(
-        selectedFolder,
-      );
-      final exportedImages = await _exportDrawSheetImagesToFolder(
-        selectedFolder,
-      );
-      if (!mounted) {
+      if (_divisions.isEmpty) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('No divisions are available to export.'),
+            ),
+          );
+        }
         return;
       }
 
-      final shouldClear = await showDialog<bool>(
-        context: context,
-        builder: (context) {
-          return AlertDialog(
-            title: const Text('Data Saved'),
-            content: Text(
-              'Draw sheets exported successfully.\nSummary file: $summaryPath\nImages exported: $exportedImages\nCompetitors XLSX: competitors.xlsx\n\nClear current tournament data and logs for a new tournament?',
-            ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.of(context).pop(false),
-                child: const Text('Keep Data'),
-              ),
-              FilledButton(
-                onPressed: () => Navigator.of(context).pop(true),
-                child: const Text('Clear Now'),
-              ),
-            ],
-          );
-        },
-      );
-
-      if (shouldClear == true) {
-        await _repository.clearTournamentData();
-        if (!mounted) {
-          return;
-        }
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Tournament data and logs cleared.')),
-        );
+      if (kIsWeb) {
+        await _saveDataForWeb();
+        return;
       }
+
+      final selectedFolder = await getDirectoryPath(
+        confirmButtonText: 'Save Draw Sheets Here',
+      );
+      if (selectedFolder == null || selectedFolder.isEmpty) {
+        return;
+      }
+
+      final exportedImages = await _exportDrawSheetImagesToFolder(
+        selectedFolder,
+      );
+      await _exportDivisionLogsXlsxToFolder(selectedFolder);
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'Saved $exportedImages draw-sheet images and division_logs.xlsx.',
+          ),
+        ),
+      );
     } catch (error) {
       if (!mounted) {
         return;
@@ -278,43 +295,56 @@ class _HomeScreenState extends State<HomeScreen> {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Unable to save draw sheets: $error')),
       );
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isSavingDrawSheets = false;
+        });
+      }
     }
   }
 
   Future<void> _saveDataForWeb() async {
-    try {
-      final files = _repository.buildTournamentExportFiles();
-      files.addAll(await _captureDrawSheetImages());
+    final images = await _captureDrawSheetImages();
+    if (images.isEmpty) {
+      return;
+    }
 
-      final archive = Archive();
-      for (final entry in files.entries) {
-        archive.addFile(
-          ArchiveFile(entry.key, entry.value.length, entry.value),
-        );
-      }
-      final zipBytes = ZipEncoder().encode(archive);
-      if (zipBytes == null) {
-        throw StateError('Unable to create tournament ZIP file.');
-      }
-      await downloadBytes(
-        fileName: 'tiska_tournament_data.zip',
-        bytes: Uint8List.fromList(zipBytes),
-        mimeType: 'application/zip',
-      );
-      if (!mounted) {
-        return;
-      }
+    final processLogBytes = _buildDivisionLogsXlsxBytes();
+    final filesForArchive = <String, Uint8List>{
+      ...images,
+      'division_logs.xlsx': processLogBytes,
+    };
+
+    final zipBytes = await compute(encodeDrawSheetImageArchive, filesForArchive);
+    await downloadBytes(
+      fileName: 'tiska_draw_sheets.zip',
+      bytes: Uint8List.fromList(zipBytes),
+      mimeType: 'application/zip',
+    );
+    if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Tournament data ZIP downloaded.')),
-      );
-    } catch (error) {
-      if (!mounted) {
-        return;
-      }
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Unable to save tournament data: $error')),
+        const SnackBar(
+          content: Text('Draw-sheet images + division logs ZIP downloaded.'),
+        ),
       );
     }
+  }
+
+  Uint8List _buildDivisionLogsXlsxBytes() {
+    final bytes = encodeDivisionProcessLogWorkbook(
+      divisions: _divisions,
+      tatamiLogsByTatami: _tatamiLogsByTatami,
+    );
+    return Uint8List.fromList(bytes);
+  }
+
+  Future<void> _exportDivisionLogsXlsxToFolder(String folderPath) async {
+    final file = File(
+      '$folderPath${Platform.pathSeparator}division_logs.xlsx',
+    );
+    await file.parent.create(recursive: true);
+    await file.writeAsBytes(_buildDivisionLogsXlsxBytes(), flush: true);
   }
 
   Future<void> _closeApp() async {
@@ -332,11 +362,34 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Future<int> _exportDrawSheetImagesToFolder(String folderPath) async {
     final images = await _captureDrawSheetImages();
+    for (final tatamiFolder in _tatamiFolderNames) {
+      await Directory('$folderPath${Platform.pathSeparator}$tatamiFolder')
+          .create(recursive: true);
+    }
     for (final entry in images.entries) {
-      final file = File('$folderPath${Platform.pathSeparator}${entry.key}');
+      final relativePath = entry.key.replaceAll('/', Platform.pathSeparator);
+      final file = File('$folderPath${Platform.pathSeparator}$relativePath');
+      await file.parent.create(recursive: true);
       await file.writeAsBytes(entry.value, flush: true);
     }
     return images.length;
+  }
+
+  List<String> get _tatamiFolderNames {
+    final folders = <String>{
+      ..._tatamiDefinitions.map(
+        (definition) => _safeTatamiFolderName(definition.name),
+      ),
+      ..._divisions.map(
+        (division) => _safeTatamiFolderName(division.assignedTatamiName),
+      ),
+    };
+    return folders.toList();
+  }
+
+  String _safeTatamiFolderName(String value) {
+    final safeName = _safeFileName(value.trim());
+    return safeName.isEmpty ? 'Unassigned Tatami' : safeName;
   }
 
   Future<Map<String, Uint8List>> _captureDrawSheetImages() async {
@@ -350,10 +403,6 @@ class _HomeScreenState extends State<HomeScreen> {
       if (!mounted) {
         return images;
       }
-      if (division.matchRecords.isEmpty && division.placements.isEmpty) {
-        continue;
-      }
-
       final imageBytes = await screenshotController.captureFromWidget(
         Theme(
           data: Theme.of(context),
@@ -377,10 +426,9 @@ class _HomeScreenState extends State<HomeScreen> {
         pixelRatio: 2,
       );
 
-      final safeName = _safeFileName(
-        '${division.assignedTatamiName}_${division.title}_${division.id}.png',
-      );
-      images[safeName] = imageBytes;
+      final tatamiFolder = _safeTatamiFolderName(division.assignedTatamiName);
+      final safeName = _safeFileName('${division.title}_${division.id}.png');
+      images['$tatamiFolder/$safeName'] = imageBytes;
     }
 
     return images;
@@ -396,6 +444,7 @@ class _HomeScreenState extends State<HomeScreen> {
     _competitorsSubscription?.cancel();
     _divisionsSubscription?.cancel();
     _tatamiSubscription?.cancel();
+    _tatamiLogsSubscription?.cancel();
     super.dispose();
   }
 
@@ -543,9 +592,17 @@ class _HomeScreenState extends State<HomeScreen> {
         title: const Text('TISKA Tournament Manager'),
         actions: [
           IconButton(
-            tooltip: 'Save Data',
-            onPressed: _isLoading ? null : _saveDrawSheetsToFolder,
-            icon: const Icon(Icons.save_alt),
+            tooltip: _isSavingDrawSheets ? 'Saving draw sheets' : 'Save Data',
+            onPressed: _isLoading || _isSavingDrawSheets
+                ? null
+                : _saveDrawSheetsToFolder,
+            icon: _isSavingDrawSheets
+                ? const SizedBox(
+                    width: 20,
+                    height: 20,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Icon(Icons.save_alt),
           ),
           IconButton(
             tooltip: 'Close App',

@@ -1,5 +1,31 @@
 import 'package:supabase_flutter/supabase_flutter.dart';
 
+class TournamentRegistration {
+  final String id;
+  final String password;
+  final DateTime createdAt;
+
+  const TournamentRegistration({
+    required this.id,
+    required this.password,
+    required this.createdAt,
+  });
+}
+
+List<TournamentRegistration> tournamentsCreatedWithinLastThreeDays(
+  Iterable<TournamentRegistration> tournaments, {
+  DateTime? now,
+}) {
+  final currentTime = (now ?? DateTime.now()).toUtc();
+  final cutoff = currentTime.subtract(const Duration(days: 3));
+  final recent = tournaments.where((tournament) {
+    final createdAt = tournament.createdAt.toUtc();
+    return !createdAt.isBefore(cutoff) && !createdAt.isAfter(currentTime);
+  }).toList();
+  recent.sort((left, right) => right.createdAt.compareTo(left.createdAt));
+  return recent;
+}
+
 class TournamentBackend {
   TournamentBackend({SupabaseClient? client})
     : _client = client ?? Supabase.instance.client;
@@ -7,22 +33,38 @@ class TournamentBackend {
   static const Duration _requestTimeout = Duration(seconds: 10);
   final SupabaseClient _client;
 
-  Future<Map<String, String>> loadTournamentCredentials() async {
+  Future<List<TournamentRegistration>> loadTournamentRegistrations() async {
     final response = await _client
         .from('tournament_credentials')
-        .select('id, password')
+        .select('id, password, created_at')
         .timeout(_requestTimeout);
 
-    final result = <String, String>{};
+    final result = <TournamentRegistration>[];
     for (final row in response as List<dynamic>) {
       final item = row as Map<String, dynamic>;
       final id = item['id']?.toString();
       final password = item['password']?.toString();
       if (id != null && password != null) {
-        result[id] = password;
+        result.add(
+          TournamentRegistration(
+            id: id,
+            password: password,
+            createdAt:
+                DateTime.tryParse(item['created_at']?.toString() ?? '') ??
+                DateTime.fromMillisecondsSinceEpoch(0, isUtc: true),
+          ),
+        );
       }
     }
     return result;
+  }
+
+  Future<Map<String, String>> loadTournamentCredentials() async {
+    final registrations = await loadTournamentRegistrations();
+    return <String, String>{
+      for (final registration in registrations)
+        registration.id: registration.password,
+    };
   }
 
   Future<void> saveTournamentCredentials(

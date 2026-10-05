@@ -15,7 +15,7 @@ class TournamentAccessScreen extends StatefulWidget {
 class _TournamentAccessScreenState extends State<TournamentAccessScreen> {
   final TextEditingController _tournamentIdController = TextEditingController();
   final TextEditingController _passwordController = TextEditingController();
-  final Map<String, String> _savedTournaments = <String, String>{};
+  List<TournamentRegistration> _tournaments = <TournamentRegistration>[];
   bool _isSubmitting = false;
   bool _isLoadingSavedTournaments = true;
   String? _errorMessage;
@@ -29,16 +29,14 @@ class _TournamentAccessScreenState extends State<TournamentAccessScreen> {
   Future<void> _loadSavedTournaments() async {
     try {
       final backend = TournamentBackend();
-      final credentials = await backend.loadTournamentCredentials();
+      final registrations = await backend.loadTournamentRegistrations();
 
       if (!mounted) {
         return;
       }
 
       setState(() {
-        _savedTournaments
-          ..clear()
-          ..addAll(credentials);
+        _tournaments = registrations;
         _isLoadingSavedTournaments = false;
       });
     } catch (_) {
@@ -52,8 +50,87 @@ class _TournamentAccessScreenState extends State<TournamentAccessScreen> {
     }
   }
 
+  List<TournamentRegistration> get _recentTournaments =>
+      tournamentsCreatedWithinLastThreeDays(_tournaments);
+
+  List<TournamentRegistration> get _olderTournaments {
+    final recentIds = _recentTournaments
+        .map((tournament) => tournament.id)
+        .toSet();
+    final older = _tournaments
+        .where((tournament) => !recentIds.contains(tournament.id))
+        .toList();
+    older.sort((left, right) => right.createdAt.compareTo(left.createdAt));
+    return older;
+  }
+
+  TournamentRegistration? get _selectedSavedTournament {
+    final id = _tournamentIdController.text.trim();
+    for (final tournament in _tournaments) {
+      if (tournament.id == id) {
+        return tournament;
+      }
+    }
+    return null;
+  }
+
+  void _selectSavedTournament(TournamentRegistration tournament) {
+    setState(() {
+      _tournamentIdController.text = tournament.id;
+      _passwordController.clear();
+      _errorMessage = null;
+    });
+  }
+
+  Future<void> _exploreOlderTournaments() async {
+    final olderTournaments = _olderTournaments;
+    if (olderTournaments.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No older tournaments are available.')),
+      );
+      return;
+    }
+
+    final selected = await showDialog<TournamentRegistration>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Other tournaments'),
+        content: SizedBox(
+          width: 380,
+          height: 360,
+          child: ListView.separated(
+            itemCount: olderTournaments.length,
+            separatorBuilder: (context, index) => const Divider(height: 1),
+            itemBuilder: (context, index) {
+              final tournament = olderTournaments[index];
+              return ListTile(
+                leading: const Icon(Icons.folder_open_rounded),
+                title: Text(tournament.id),
+                subtitle: Text(
+                  'Created ${MaterialLocalizations.of(context).formatMediumDate(tournament.createdAt.toLocal())}',
+                ),
+                onTap: () => Navigator.of(dialogContext).pop(tournament),
+              );
+            },
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(),
+            child: const Text('Close'),
+          ),
+        ],
+      ),
+    );
+
+    if (selected != null && mounted) {
+      _selectSavedTournament(selected);
+    }
+  }
+
   String _friendlyErrorMessage(Object error) {
-    final message = error.toString()
+    final message = error
+        .toString()
         .replaceFirst('Exception: ', '')
         .replaceFirst('StateError: ', '');
 
@@ -107,9 +184,7 @@ class _TournamentAccessScreenState extends State<TournamentAccessScreen> {
       } else {
         final savedPassword = registrations[tournamentId];
         if (savedPassword == null || savedPassword != password) {
-          throw StateError(
-            'The tournament ID or password is incorrect.',
-          );
+          throw StateError('The tournament ID or password is incorrect.');
         }
       }
 
@@ -119,9 +194,8 @@ class _TournamentAccessScreenState extends State<TournamentAccessScreen> {
 
       Navigator.of(context).pushReplacement(
         MaterialPageRoute<void>(
-          builder: (BuildContext context) => HomeScreen(
-            tournamentId: tournamentId,
-          ),
+          builder: (BuildContext context) =>
+              HomeScreen(tournamentId: tournamentId),
         ),
       );
     } catch (error) {
@@ -154,147 +228,173 @@ class _TournamentAccessScreenState extends State<TournamentAccessScreen> {
 
     return Scaffold(
       backgroundColor: colorScheme.surface,
-      body: Center(
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 480),
-          child: Card(
-            elevation: 2,
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(22),
-            ),
-            child: Padding(
-              padding: const EdgeInsets.all(28),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  Icon(
-                    Icons.shield_outlined,
-                    size: 56,
-                    color: colorScheme.primary,
-                  ),
-                  const SizedBox(height: 16),
-                  Text(
-                    'Tournament Access',
-                    textAlign: TextAlign.center,
-                    style: textTheme.headlineSmall?.copyWith(
-                      fontWeight: FontWeight.w700,
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                  Text(
-                    'Open an existing tournament or create a new one to continue.',
-                    textAlign: TextAlign.center,
-                    style: textTheme.bodyMedium?.copyWith(
-                      color: colorScheme.onSurfaceVariant,
-                    ),
-                  ),
-                  const SizedBox(height: 24),
-                  if (!_isLoadingSavedTournaments && _savedTournaments.isNotEmpty) ...[
-                    Align(
-                      alignment: Alignment.centerLeft,
-                      child: Text(
-                        'Saved tournaments',
-                        style: textTheme.titleSmall?.copyWith(
-                          fontWeight: FontWeight.w600,
+      body: SafeArea(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.symmetric(vertical: 16),
+          child: Center(
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 480),
+              child: Card(
+                elevation: 2,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(22),
+                ),
+                child: Padding(
+                  padding: const EdgeInsets.all(28),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Icon(
+                        Icons.shield_outlined,
+                        size: 56,
+                        color: colorScheme.primary,
+                      ),
+                      const SizedBox(height: 16),
+                      Text(
+                        'Tournament Access',
+                        textAlign: TextAlign.center,
+                        style: textTheme.headlineSmall?.copyWith(
+                          fontWeight: FontWeight.w700,
                         ),
                       ),
-                    ),
-                    const SizedBox(height: 8),
-                    Wrap(
-                      spacing: 8,
-                      runSpacing: 8,
-                      children: _savedTournaments.keys
-                          .map(
-                            (tournamentId) => ActionChip(
-                              label: Text(tournamentId),
-                              avatar: const Icon(Icons.folder_open_rounded, size: 16),
-                              onPressed: () {
-                                _tournamentIdController.text = tournamentId;
-                                _passwordController.clear();
-                                setState(() {
-                                  _errorMessage = null;
-                                });
-                              },
-                            ),
-                          )
-                          .toList(),
-                    ),
-                    const SizedBox(height: 16),
-                  ],
-                  if (_tournamentIdController.text.isNotEmpty &&
-                      _savedTournaments.containsKey(_tournamentIdController.text)) ...[
-                    TextButton.icon(
-                      onPressed: () {
-                        _passwordController.clear();
-                        setState(() {
-                          _errorMessage = null;
-                        });
-                        _openTournament(createNewTournament: false);
-                      },
-                      icon: const Icon(Icons.restore_rounded),
-                      label: const Text('Continue last tournament'),
-                    ),
-                    const SizedBox(height: 8),
-                  ],
-                  TextFormField(
-                    controller: _tournamentIdController,
-                    textInputAction: TextInputAction.next,
-                    decoration: const InputDecoration(
-                      labelText: 'Tournament ID',
-                      prefixIcon: Icon(Icons.vpn_key_outlined),
-                      border: OutlineInputBorder(),
-                    ),
-                  ),
-                  const SizedBox(height: 16),
-                  TextFormField(
-                    controller: _passwordController,
-                    obscureText: true,
-                    textInputAction: TextInputAction.done,
-                    onFieldSubmitted: (_) {
-                      if (!_isSubmitting) {
-                        _openTournament(createNewTournament: false);
-                      }
-                    },
-                    decoration: const InputDecoration(
-                      labelText: 'Password',
-                      prefixIcon: Icon(Icons.lock_outline),
-                      border: OutlineInputBorder(),
-                    ),
-                  ),
-                  if (_errorMessage != null) ...[
-                    const SizedBox(height: 16),
-                    Container(
-                      padding: const EdgeInsets.all(12),
-                      decoration: BoxDecoration(
-                        color: colorScheme.errorContainer,
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                      child: Text(
-                        _errorMessage!,
+                      const SizedBox(height: 8),
+                      Text(
+                        'Open an existing tournament or create a new one to continue.',
+                        textAlign: TextAlign.center,
                         style: textTheme.bodyMedium?.copyWith(
-                          color: colorScheme.onErrorContainer,
+                          color: colorScheme.onSurfaceVariant,
                         ),
                       ),
-                    ),
-                  ],
-                  const SizedBox(height: 20),
-                  FilledButton.icon(
-                    onPressed: _isSubmitting
-                        ? null
-                        : () => _openTournament(createNewTournament: false),
-                    icon: const Icon(Icons.login_rounded),
-                    label: const Text('Open Tournament'),
+                      const SizedBox(height: 24),
+                      if (!_isLoadingSavedTournaments &&
+                          _tournaments.isNotEmpty) ...[
+                        if (_recentTournaments.isNotEmpty) ...[
+                          Align(
+                            alignment: Alignment.centerLeft,
+                            child: Text(
+                              'Saved in the past 3 days',
+                              style: textTheme.titleSmall?.copyWith(
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ),
+                          const SizedBox(height: 8),
+                          Wrap(
+                            spacing: 8,
+                            runSpacing: 8,
+                            children: _recentTournaments
+                                .map(
+                                  (tournament) => ActionChip(
+                                    label: Text(tournament.id),
+                                    avatar: const Icon(
+                                      Icons.folder_open_rounded,
+                                      size: 16,
+                                    ),
+                                    onPressed: () =>
+                                        _selectSavedTournament(tournament),
+                                  ),
+                                )
+                                .toList(),
+                          ),
+                          const SizedBox(height: 8),
+                        ] else ...[
+                          Text(
+                            'No tournaments were created in the past 3 days.',
+                            style: textTheme.bodySmall?.copyWith(
+                              color: colorScheme.onSurfaceVariant,
+                            ),
+                          ),
+                          const SizedBox(height: 8),
+                        ],
+                        TextButton.icon(
+                          onPressed: _exploreOlderTournaments,
+                          icon: const Icon(Icons.manage_search_rounded),
+                          label: const Text('Explore Other Tournaments'),
+                        ),
+                        const SizedBox(height: 8),
+                      ] else if (!_isLoadingSavedTournaments) ...[
+                        TextButton.icon(
+                          onPressed: _exploreOlderTournaments,
+                          icon: const Icon(Icons.manage_search_rounded),
+                          label: const Text('Explore Other Tournaments'),
+                        ),
+                        const SizedBox(height: 8),
+                      ],
+                      if (_selectedSavedTournament != null) ...[
+                        TextButton.icon(
+                          onPressed: _isSubmitting
+                              ? null
+                              : () =>
+                                    _openTournament(createNewTournament: false),
+                          icon: const Icon(Icons.restore_rounded),
+                          label: const Text('Continue saved tournament'),
+                        ),
+                        const SizedBox(height: 8),
+                      ],
+                      TextFormField(
+                        controller: _tournamentIdController,
+                        textInputAction: TextInputAction.next,
+                        decoration: const InputDecoration(
+                          labelText: 'Tournament ID',
+                          prefixIcon: Icon(Icons.vpn_key_outlined),
+                          border: OutlineInputBorder(),
+                        ),
+                      ),
+                      const SizedBox(height: 16),
+                      TextFormField(
+                        controller: _passwordController,
+                        obscureText: true,
+                        enableSuggestions: false,
+                        autocorrect: false,
+                        autofillHints: const <String>[],
+                        textInputAction: TextInputAction.done,
+                        onFieldSubmitted: (_) {
+                          if (!_isSubmitting) {
+                            _openTournament(createNewTournament: false);
+                          }
+                        },
+                        decoration: const InputDecoration(
+                          labelText: 'Password',
+                          prefixIcon: Icon(Icons.lock_outline),
+                          border: OutlineInputBorder(),
+                        ),
+                      ),
+                      if (_errorMessage != null) ...[
+                        const SizedBox(height: 16),
+                        Container(
+                          padding: const EdgeInsets.all(12),
+                          decoration: BoxDecoration(
+                            color: colorScheme.errorContainer,
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          child: Text(
+                            _errorMessage!,
+                            style: textTheme.bodyMedium?.copyWith(
+                              color: colorScheme.onErrorContainer,
+                            ),
+                          ),
+                        ),
+                      ],
+                      const SizedBox(height: 20),
+                      FilledButton.icon(
+                        onPressed: _isSubmitting
+                            ? null
+                            : () => _openTournament(createNewTournament: false),
+                        icon: const Icon(Icons.login_rounded),
+                        label: const Text('Open Tournament'),
+                      ),
+                      const SizedBox(height: 12),
+                      OutlinedButton.icon(
+                        onPressed: _isSubmitting
+                            ? null
+                            : () => _openTournament(createNewTournament: true),
+                        icon: const Icon(Icons.add_rounded),
+                        label: const Text('Create New Tournament'),
+                      ),
+                    ],
                   ),
-                  const SizedBox(height: 12),
-                  OutlinedButton.icon(
-                    onPressed: _isSubmitting
-                        ? null
-                        : () => _openTournament(createNewTournament: true),
-                    icon: const Icon(Icons.add_rounded),
-                    label: const Text('Create New Tournament'),
-                  ),
-                ],
+                ),
               ),
             ),
           ),
