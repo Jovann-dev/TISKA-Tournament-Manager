@@ -18,36 +18,36 @@ List<int> encodeDivisionProcessLogWorkbook({
     TextCellValue('What Happened'),
     TextCellValue('When it Happened'),
     TextCellValue('Number of Competitors'),
+    TextCellValue('Tatami'),
+    TextCellValue('Division Description'),
   ]);
 
   final divisionById = <String, Division>{
     for (final division in divisions) division.id: division,
   };
 
-  final allEntries = tatamiLogsByTatami.values
-      .expand((entries) => entries)
-      .toList()
-    ..sort((left, right) => left.timestamp.compareTo(right.timestamp));
+  final allEntries = <TatamiLogEntry>[
+    for (final entry in tatamiLogsByTatami.values.expand((entries) => entries))
+      if (entry.lifecycleEntry(division: divisionById[entry.divisionId]) case final normalized?)
+        normalized,
+  ]..sort((left, right) {
+    final timestamp = left.timestamp.compareTo(right.timestamp);
+    return timestamp != 0 ? timestamp : left.id.compareTo(right.id);
+  });
 
   for (final entry in allEntries) {
-    final division = entry.divisionId == null
-        ? null
-        : divisionById[entry.divisionId!];
-    final divisionLabel =
-        entry.divisionTitle ?? division?.title ?? entry.divisionId ?? 'Unknown';
-    final activity = entry.activity ?? entry.message;
-    final competitorCount =
-        entry.competitorCount ?? division?.competitorIds.length ?? 0;
     final timestamp = DateTime.fromMillisecondsSinceEpoch(
       entry.timestamp,
       isUtc: true,
     ).toIso8601String();
 
     sheet.appendRow(<CellValue?>[
-      TextCellValue(divisionLabel),
-      TextCellValue(activity),
+      TextCellValue(entry.divisionId!),
+      TextCellValue(entry.activity!),
       TextCellValue(timestamp),
-      IntCellValue(competitorCount),
+      entry.competitorCount == null ? null : IntCellValue(entry.competitorCount!),
+      TextCellValue(entry.tatamiName),
+      TextCellValue(entry.divisionTitle ?? ''),
     ]);
   }
 

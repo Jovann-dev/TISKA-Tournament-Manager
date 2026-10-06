@@ -35,8 +35,9 @@ List<int> encodeDrawSheetImageArchive(Map<String, Uint8List> images) {
 
 class HomeScreen extends StatefulWidget {
   final String tournamentId;
+  final bool isAdmin;
 
-  const HomeScreen({super.key, this.tournamentId = ''});
+  const HomeScreen({super.key, this.tournamentId = '', this.isAdmin = false});
 
   @override
   State<HomeScreen> createState() => _HomeScreenState();
@@ -58,6 +59,11 @@ class _HomeScreenState extends State<HomeScreen> {
   StreamSubscription<List<Competitor>>? _competitorsSubscription;
   StreamSubscription<List<Division>>? _divisionsSubscription;
   StreamSubscription<List<TatamiAssignment>>? _tatamiSubscription;
+  StreamSubscription<TournamentSyncStatus>? _syncStatusSubscription;
+  TournamentSyncStatus _syncStatus = const TournamentSyncStatus(
+    TournamentSyncState.localOnly,
+    'Saved locally',
+  );
   StreamSubscription<Map<String, List<TatamiLogEntry>>>?
   _tatamiLogsSubscription;
   Map<String, List<TatamiLogEntry>> _tatamiLogsByTatami =
@@ -69,9 +75,11 @@ class _HomeScreenState extends State<HomeScreen> {
   bool _repositoryReady = false;
   bool _subscriptionsAttached = false;
   bool _isSavingDrawSheets = false;
+  bool _isDeletingTournament = false;
   String? _streamError;
 
   bool get _isLoading =>
+      _isDeletingTournament ||
       !_repositoryReady ||
       (!_tatamiNamesLoaded ||
           !_competitorsLoaded ||
@@ -147,6 +155,10 @@ class _HomeScreenState extends State<HomeScreen> {
         _tatamiLogsByTatami = logs;
       });
     }, onError: _handleStreamError);
+    _syncStatusSubscription = _repository.watchSyncStatus().listen((status) {
+      if (!mounted) return;
+      setState(() => _syncStatus = status);
+    });
   }
 
   Future<void> _initializeRepository() async {
@@ -160,6 +172,7 @@ class _HomeScreenState extends State<HomeScreen> {
         _repositoryReady = true;
       });
     } catch (error) {
+      _attachSubscriptions();
       _handleStreamError(error);
     }
   }
@@ -316,7 +329,10 @@ class _HomeScreenState extends State<HomeScreen> {
       'division_logs.xlsx': processLogBytes,
     };
 
-    final zipBytes = await compute(encodeDrawSheetImageArchive, filesForArchive);
+    final zipBytes = await compute(
+      encodeDrawSheetImageArchive,
+      filesForArchive,
+    );
     await downloadBytes(
       fileName: 'tiska_draw_sheets.zip',
       bytes: Uint8List.fromList(zipBytes),
@@ -340,9 +356,7 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Future<void> _exportDivisionLogsXlsxToFolder(String folderPath) async {
-    final file = File(
-      '$folderPath${Platform.pathSeparator}division_logs.xlsx',
-    );
+    final file = File('$folderPath${Platform.pathSeparator}division_logs.xlsx');
     await file.parent.create(recursive: true);
     await file.writeAsBytes(_buildDivisionLogsXlsxBytes(), flush: true);
   }
@@ -358,6 +372,137 @@ class _HomeScreenState extends State<HomeScreen> {
       ),
       (Route<dynamic> route) => false,
     );
+  }
+
+  Future<void> _changeUserPassword() async {
+    final passwordController = TextEditingController();
+    final confirmationController = TextEditingController();
+    String? password;
+    try {
+      password = await showDialog<String>(
+        context: context,
+        builder: (dialogContext) => StatefulBuilder(
+          builder: (context, setDialogState) => AlertDialog(
+            title: const Text('Set user password'),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                TextField(
+                  controller: passwordController,
+                  obscureText: true,
+                  autofocus: true,
+                  decoration: const InputDecoration(labelText: 'User password'),
+                  onChanged: (_) => setDialogState(() {}),
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: confirmationController,
+                  obscureText: true,
+                  decoration: const InputDecoration(
+                    labelText: 'Confirm user password',
+                  ),
+                  onChanged: (_) => setDialogState(() {}),
+                  onSubmitted: (_) {
+                    if (_passwordFieldsMatch(
+                      passwordController,
+                      confirmationController,
+                    )) {
+                      Navigator.of(dialogContext)
+                          .pop(passwordController.text.trim());
+                    }
+                  },
+                ),
+              ],
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(dialogContext).pop(),
+                child: const Text('Cancel'),
+              ),
+              FilledButton(
+                onPressed:
+                    _passwordFieldsMatch(
+                      passwordController,
+                      confirmationController,
+                    )
+                    ? () =>
+                          Navigator.of(dialogContext)
+                              .pop(passwordController.text.trim())
+                    : null,
+                child: const Text('Save password'),
+              ),
+            ],
+          ),
+        ),
+      );
+    } finally {
+      passwordController.dispose();
+      confirmationController.dispose();
+    }
+    if (password == null || !mounted) return;
+
+    try {
+      await _repository.setTournamentUserPassword(password);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text('User password saved.')));
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Unable to save user password: $error')),
+      );
+    }
+  }
+
+  bool _passwordFieldsMatch(
+    TextEditingController password,
+    TextEditingController confirmation,
+  ) {
+    final value = password.text.trim();
+    return value.isNotEmpty && value == confirmation.text.trim();
+  }
+
+  Future<void> _deleteTournament() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Delete tournament?'),
+        content: Text(
+          'This permanently deletes "${widget.tournamentId}" from the shared database and clears its local data. This cannot be undone.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton.icon(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            icon: const Icon(Icons.delete_forever_outlined),
+            label: const Text('Delete tournament'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+
+    setState(() => _isDeletingTournament = true);
+    try {
+      await _repository.deleteTournament();
+      if (!mounted) return;
+      Navigator.of(context).pushAndRemoveUntil(
+        MaterialPageRoute<void>(
+          builder: (context) => const TournamentAccessScreen(),
+        ),
+        (route) => false,
+      );
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Unable to delete tournament: $error')),
+      );
+    } finally {
+      if (mounted) setState(() => _isDeletingTournament = false);
+    }
   }
 
   Future<int> _exportDrawSheetImagesToFolder(String folderPath) async {
@@ -445,6 +590,8 @@ class _HomeScreenState extends State<HomeScreen> {
     _divisionsSubscription?.cancel();
     _tatamiSubscription?.cancel();
     _tatamiLogsSubscription?.cancel();
+    _syncStatusSubscription?.cancel();
+    unawaited(_repository.dispose());
     super.dispose();
   }
 
@@ -525,6 +672,7 @@ class _HomeScreenState extends State<HomeScreen> {
                       context,
                       MaterialPageRoute(
                         builder: (context) => TatamiScreen(
+                          tournamentId: widget.tournamentId,
                           watchTatamiDefinitions:
                               _repository.watchTatamiDefinitions,
                           watchDivisions: _repository.watchDivisions,
@@ -577,6 +725,7 @@ class _HomeScreenState extends State<HomeScreen> {
                       context,
                       MaterialPageRoute(
                         builder: (context) => TournamentResultsScreen(
+                          tournamentId: widget.tournamentId,
                           divisions: _divisions,
                           competitors: _competitors,
                           tatamiDefinitions: _tatamiDefinitions,
@@ -591,6 +740,18 @@ class _HomeScreenState extends State<HomeScreen> {
       appBar: AppBar(
         title: const Text('TISKA Tournament Manager'),
         actions: [
+          if (widget.isAdmin) ...[
+            IconButton(
+              tooltip: 'Set user password',
+              onPressed: _isDeletingTournament ? null : _changeUserPassword,
+              icon: const Icon(Icons.password_rounded),
+            ),
+            IconButton(
+              tooltip: 'Delete tournament',
+              onPressed: _isDeletingTournament ? null : _deleteTournament,
+              icon: const Icon(Icons.delete_forever_outlined),
+            ),
+          ],
           IconButton(
             tooltip: _isSavingDrawSheets ? 'Saving draw sheets' : 'Save Data',
             onPressed: _isLoading || _isSavingDrawSheets
@@ -695,6 +856,28 @@ class _HomeScreenState extends State<HomeScreen> {
                     ),
                   ),
                 ],
+                const SizedBox(height: 12),
+                Row(
+                  children: [
+                    Icon(switch (_syncStatus.state) {
+                      TournamentSyncState.synced => Icons.cloud_done_outlined,
+                      TournamentSyncState.syncing => Icons.sync,
+                      TournamentSyncState.conflict =>
+                        Icons.warning_amber_rounded,
+                      _ => Icons.cloud_off_outlined,
+                    }),
+                    const SizedBox(width: 10),
+                    Expanded(child: Text(_syncStatus.message)),
+                    IconButton(
+                      tooltip: 'Retry synchronization',
+                      onPressed:
+                          _syncStatus.state == TournamentSyncState.syncing
+                          ? null
+                          : () => _repository.synchronize(),
+                      icon: const Icon(Icons.sync),
+                    ),
+                  ],
+                ),
                 const SizedBox(height: 18),
                 Text('Operations', style: textTheme.titleLarge),
                 const SizedBox(height: 10),

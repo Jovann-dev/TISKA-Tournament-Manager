@@ -4,11 +4,13 @@ import 'draw_sheet_screen.dart';
 import 'tournament_models.dart';
 
 class CompetitionResultsScreen extends StatefulWidget {
+  final String tournamentId;
   final Division division;
   final List<Competitor> competitors;
 
   const CompetitionResultsScreen({
     super.key,
+    this.tournamentId = '',
     required this.division,
     required this.competitors,
   });
@@ -47,6 +49,7 @@ class _CompetitionResultsScreenState extends State<CompetitionResultsScreen> {
       context,
       MaterialPageRoute(
         builder: (context) => DrawSheetScreen(
+          tournamentId: widget.tournamentId,
           division: widget.division,
           competitors: widget.competitors,
         ),

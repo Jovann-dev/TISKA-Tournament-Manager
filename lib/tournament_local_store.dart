@@ -135,4 +135,16 @@ class TournamentLocalStore {
     final preferences = await SharedPreferences.getInstance();
     await preferences.setString(_activeTournamentKey, tournamentId);
   }
+
+  Future<void> clearTournamentData({required String tournamentId}) async {
+    final normalized = tournamentId.trim();
+    if (normalized.isEmpty) return;
+
+    final preferences = await SharedPreferences.getInstance();
+    await preferences.remove(_scopeKey(_snapshotKey, normalized));
+    await preferences.remove(_scopeKey(_drawSheetSnapshotsKey, normalized));
+    if (preferences.getString(_activeTournamentKey) == normalized) {
+      await preferences.remove(_activeTournamentKey);
+    }
+  }
 }

@@ -636,6 +636,9 @@ class DivisionInProgressMatch {
   final int competitorBWarningStage;
   final int period;
   final int timerRemainingSeconds;
+  final int? timerRemainingMilliseconds;
+  final bool timerRunning;
+  final int? timerEndsAtMillis;
   final List<DivisionMatchEventRecord> events;
 
   const DivisionInProgressMatch({
@@ -646,8 +649,18 @@ class DivisionInProgressMatch {
     this.competitorBWarningStage = 0,
     this.period = 1,
     this.timerRemainingSeconds = 0,
+    this.timerRemainingMilliseconds,
+    this.timerRunning = false,
+    this.timerEndsAtMillis,
     this.events = const <DivisionMatchEventRecord>[],
   });
+
+  Duration remainingAt(DateTime now) {
+    final remaining = timerRunning && timerEndsAtMillis != null
+        ? timerEndsAtMillis! - now.millisecondsSinceEpoch
+        : timerRemainingMilliseconds ?? timerRemainingSeconds * 1000;
+    return Duration(milliseconds: remaining < 0 ? 0 : remaining);
+  }
 
   Map<String, Object?> toMap() {
     return <String, Object?>{
@@ -658,6 +671,9 @@ class DivisionInProgressMatch {
       'competitorBWarningStage': competitorBWarningStage,
       'period': period,
       'timerRemainingSeconds': timerRemainingSeconds,
+      'timerRemainingMilliseconds': timerRemainingMilliseconds,
+      'timerRunning': timerRunning,
+      'timerEndsAtMillis': timerEndsAtMillis,
       'events': events.map((event) => event.toMap()).toList(),
     };
   }
@@ -674,6 +690,10 @@ class DivisionInProgressMatch {
       period: (map['period'] as num?)?.toInt() ?? 1,
       timerRemainingSeconds:
           (map['timerRemainingSeconds'] as num?)?.toInt() ?? 0,
+        timerRemainingMilliseconds:
+          (map['timerRemainingMilliseconds'] as num?)?.toInt(),
+        timerRunning: map['timerRunning'] == true,
+        timerEndsAtMillis: (map['timerEndsAtMillis'] as num?)?.toInt(),
       events: ((map['events'] as List<dynamic>?) ?? <dynamic>[])
           .whereType<Map<String, dynamic>>()
           .map(DivisionMatchEventRecord.fromMap)
@@ -702,6 +722,32 @@ class TatamiLogEntry {
     this.activity,
     this.competitorCount,
   });
+
+  TatamiLogEntry? lifecycleEntry({Division? division}) {
+    if (divisionId == null || divisionId!.isEmpty) return null;
+    final source = activity ?? message;
+    final String normalized;
+    if (source == 'Started' || source.startsWith('Started:') ||
+        source.startsWith('Division started:')) {
+      normalized = 'Started';
+    } else if (source == 'Finished' || source.startsWith('Finished:') ||
+        source.startsWith('Division concluded:') ||
+        source.startsWith('Division finished:')) {
+      normalized = 'Finished';
+    } else if (source == 'Moved' || source.startsWith('Moved ') ||
+        source.startsWith('Division moved to this tatami:') ||
+        source.startsWith('Division reassigned away:')) {
+      normalized = 'Moved';
+    } else {
+      return null;
+    }
+    return TatamiLogEntry(
+      id: id, tatamiName: tatamiName, divisionId: divisionId,
+      divisionTitle: divisionTitle ?? division?.title,
+      activity: normalized, timestamp: timestamp, message: message,
+      competitorCount: competitorCount ?? division?.competitorIds.length,
+    );
+  }
 
   Map<String, Object?> toMap() {
     return <String, Object?>{

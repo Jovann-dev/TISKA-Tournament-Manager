@@ -172,20 +172,32 @@ class _TournamentAccessScreenState extends State<TournamentAccessScreen> {
 
     try {
       final backend = TournamentBackend();
-      final registrations = await backend.loadTournamentCredentials();
+      final registrations = await backend.loadTournamentRegistrations();
+      var isAdmin = false;
 
       if (createNewTournament) {
-        if (registrations.containsKey(tournamentId)) {
+        if (registrations.any((tournament) => tournament.id == tournamentId)) {
           throw StateError(
             'A tournament with this ID already exists. Please choose another ID.',
           );
         }
         await backend.saveTournamentCredentials(tournamentId, password);
+        isAdmin = true;
       } else {
-        final savedPassword = registrations[tournamentId];
-        if (savedPassword == null || savedPassword != password) {
+        TournamentRegistration? registration;
+        for (final item in registrations) {
+          if (item.id == tournamentId) {
+            registration = item;
+            break;
+          }
+        }
+        final role = registration == null
+            ? null
+            : tournamentAccessRoleForPassword(registration, password);
+        if (role == null) {
           throw StateError('The tournament ID or password is incorrect.');
         }
+        isAdmin = role == TournamentAccessRole.admin;
       }
 
       if (!mounted) {
@@ -195,7 +207,7 @@ class _TournamentAccessScreenState extends State<TournamentAccessScreen> {
       Navigator.of(context).pushReplacement(
         MaterialPageRoute<void>(
           builder: (BuildContext context) =>
-              HomeScreen(tournamentId: tournamentId),
+              HomeScreen(tournamentId: tournamentId, isAdmin: isAdmin),
         ),
       );
     } catch (error) {

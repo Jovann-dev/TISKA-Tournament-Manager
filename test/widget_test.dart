@@ -129,6 +129,21 @@ Widget _competitionExecution(
 }
 
 void main() {
+  testWidgets('an expired kumite timer reopens at zero', (tester) async {
+    final competitors = _competitors(2);
+    await tester.pumpWidget(_competitionExecution(
+      competitors, (_, _) {},
+      division: _executionDivision(competitors).copyWith(
+        competitionType: CompetitionType.jiyuKumite,
+        inProgressMatch: const DivisionInProgressMatch(matchId: 'match_1'),
+      ),
+    ));
+    await tester.pumpAndSettle();
+    expect(find.text('Timer: 00:00'), findsOneWidget);
+    expect(find.text('Overtime'), findsOneWidget);
+    expect(find.text('Timer: 01:00'), findsNothing);
+    await tester.pumpWidget(const SizedBox());
+  });
   test('draw-sheet ZIP contains only Tatami-grouped PNG images', () async {
     final zipBytes = await compute(
       encodeDrawSheetImageArchive,

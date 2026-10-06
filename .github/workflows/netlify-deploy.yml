@@ -3,11 +3,41 @@ name: Netlify Deploy
 on:
   push:
     branches: [main]
+  pull_request:
+    branches: [main]
   workflow_dispatch:
 
 jobs:
+  database-tests:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: tiska_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Validate migration and database invariants
+        env:
+          PGPASSWORD: postgres
+        run: |
+          psql -h localhost -U postgres -d tiska_test -v ON_ERROR_STOP=1 -c 'create role anon; create role authenticated;'
+          psql -h localhost -U postgres -d tiska_test -v ON_ERROR_STOP=1 -f supabase/schema.sql
+          psql -h localhost -U postgres -d tiska_test -v ON_ERROR_STOP=1 -f supabase/schema.sql
+          psql -h localhost -U postgres -d tiska_test -v ON_ERROR_STOP=1 -f supabase/snapshot_sync_test.sql
+
   build-and-deploy:
     runs-on: ubuntu-latest
+    needs: database-tests
 
     steps:
       - name: Check out repository
@@ -16,7 +46,7 @@ jobs:
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.13.3'
+          flutter-version: '3.47.4'
           channel: 'stable'
 
       - name: Show Flutter version
@@ -25,10 +55,17 @@ jobs:
       - name: Install dependencies
         run: flutter pub get
 
+      - name: Analyze
+        run: flutter analyze --no-fatal-infos
+
+      - name: Test
+        run: flutter test
+
       - name: Build web app
         run: flutter build web --release
 
       - name: Deploy to Netlify
+        if: github.event_name != 'pull_request'
         uses: nwtgck/actions-netlify@v3.0
         with:
           publish-dir: './build/web'

@@ -3,13 +3,28 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 class TournamentRegistration {
   final String id;
   final String password;
+  final String? userPassword;
   final DateTime createdAt;
 
   const TournamentRegistration({
     required this.id,
     required this.password,
+    this.userPassword,
     required this.createdAt,
   });
+}
+
+enum TournamentAccessRole { admin, user }
+
+TournamentAccessRole? tournamentAccessRoleForPassword(
+  TournamentRegistration tournament,
+  String password,
+) {
+  if (password == tournament.password) return TournamentAccessRole.admin;
+  if (tournament.userPassword != null && password == tournament.userPassword) {
+    return TournamentAccessRole.user;
+  }
+  return null;
 }
 
 List<TournamentRegistration> tournamentsCreatedWithinLastThreeDays(
@@ -36,7 +51,7 @@ class TournamentBackend {
   Future<List<TournamentRegistration>> loadTournamentRegistrations() async {
     final response = await _client
         .from('tournament_credentials')
-        .select('id, password, created_at')
+        .select('id, password, user_password, created_at')
         .timeout(_requestTimeout);
 
     final result = <TournamentRegistration>[];
@@ -49,6 +64,7 @@ class TournamentBackend {
           TournamentRegistration(
             id: id,
             password: password,
+            userPassword: item['user_password']?.toString(),
             createdAt:
                 DateTime.tryParse(item['created_at']?.toString() ?? '') ??
                 DateTime.fromMillisecondsSinceEpoch(0, isUtc: true),
@@ -77,6 +93,41 @@ class TournamentBackend {
         .timeout(_requestTimeout);
   }
 
+  Future<void> setTournamentUserPassword(
+    String tournamentId,
+    String userPassword,
+  ) async {
+    final registration = await _client
+        .from('tournament_credentials')
+        .select('password')
+        .eq('id', tournamentId)
+        .maybeSingle()
+        .timeout(_requestTimeout);
+    if (registration == null) {
+      throw StateError('Tournament not found.');
+    }
+    if (registration['password'] == userPassword) {
+      throw StateError(
+        'The user password must differ from the admin password.',
+      );
+    }
+
+    await _client
+        .from('tournament_credentials')
+        .update({'user_password': userPassword})
+        .eq('id', tournamentId)
+        .timeout(_requestTimeout);
+  }
+
+  Future<void> deleteTournament(String tournamentId) async {
+    final response = await _client
+        .rpc('delete_tournament', params: {'p_id': tournamentId})
+        .timeout(_requestTimeout);
+    if (response != true) {
+      throw StateError('The tournament could not be deleted.');
+    }
+  }
+
   Future<Map<String, dynamic>> loadTournamentSnapshot(
     String tournamentId,
   ) async {
@@ -96,23 +147,28 @@ class TournamentBackend {
       return <String, dynamic>{};
     }
 
-    return Map<String, dynamic>.from(payload);
+    return <String, dynamic>{
+      ...Map<String, dynamic>.from(payload),
+      'revision': (response['revision'] as num?)?.toInt() ?? 0,
+    };
   }
 
-  Future<void> saveTournamentSnapshot(
+  Future<Map<String, dynamic>?> saveTournamentSnapshot(
     String tournamentId,
-    Map<String, dynamic> snapshot,
-  ) async {
-    final payload = Map<String, dynamic>.from(snapshot);
-    payload['updated_at'] = DateTime.now().toUtc().toIso8601String();
-
-    await _client
-        .from('tournaments')
-        .upsert({
-          'id': tournamentId,
-          'snapshot': payload,
-          'updated_at': payload['updated_at'],
-        })
+    Map<String, dynamic> snapshot, {
+    required int expectedRevision,
+  }) async {
+    final response = await _client
+        .rpc(
+          'save_tournament_snapshot',
+          params: {
+            'p_id': tournamentId,
+            'p_expected_revision': expectedRevision,
+            'p_snapshot': snapshot,
+          },
+        )
         .timeout(_requestTimeout);
+    if (response == null) return null;
+    return Map<String, dynamic>.from(response as Map);
   }
 }

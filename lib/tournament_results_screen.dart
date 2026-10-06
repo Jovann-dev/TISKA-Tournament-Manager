@@ -5,12 +5,14 @@ import 'draw_sheet_screen.dart';
 import 'tournament_models.dart';
 
 class TournamentResultsScreen extends StatefulWidget {
+  final String tournamentId;
   final List<Division> divisions;
   final List<Competitor> competitors;
   final List<TatamiDefinition> tatamiDefinitions;
 
   const TournamentResultsScreen({
     super.key,
+    this.tournamentId = '',
     required this.divisions,
     required this.competitors,
     required this.tatamiDefinitions,
@@ -92,6 +94,7 @@ class _TournamentResultsScreenState extends State<TournamentResultsScreen> {
       context,
       MaterialPageRoute(
         builder: (context) => CompetitionResultsScreen(
+          tournamentId: widget.tournamentId,
           division: division,
           competitors: _divisionCompetitors(division),
         ),
@@ -104,6 +107,7 @@ class _TournamentResultsScreenState extends State<TournamentResultsScreen> {
       context,
       MaterialPageRoute(
         builder: (context) => DrawSheetScreen(
+          tournamentId: widget.tournamentId,
           division: division,
           competitors: _divisionCompetitors(division),
         ),

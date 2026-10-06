@@ -4,6 +4,15 @@ import 'live_match_state.dart';
 import 'tournament_backend.dart';
 import 'tournament_local_store.dart';
 import 'tournament_models.dart';
+import 'tournament_snapshot_merge.dart';
+
+enum TournamentSyncState { localOnly, syncing, synced, offline, conflict }
+
+class TournamentSyncStatus {
+  final TournamentSyncState state;
+  final String message;
+  const TournamentSyncStatus(this.state, this.message);
+}
 
 class TournamentRepository {
   final TournamentLocalStore _localStore;
@@ -32,20 +41,33 @@ class TournamentRepository {
       <String, LiveMatchState?>{};
   final Map<String, StreamController<LiveMatchState?>> _liveMatchControllers =
       <String, StreamController<LiveMatchState?>>{};
-  final TournamentBackend _backend = TournamentBackend();
+  final TournamentBackend _backend;
   Timer? _remoteSyncTimer;
-  DateTime? _lastLocalUpdatedAt;
+  Map<String, dynamic> _syncBase = <String, dynamic>{};
   Map<String, dynamic>? _pendingRemoteSnapshot;
-  bool _remoteWriteInProgress = false;
-  bool _remoteSyncInProgress = false;
+  Future<void>? _syncOperation;
+  bool _disposed = false;
+  bool _deleting = false;
+  int _localGeneration = 0;
+  int _retryFailures = 0;
+  DateTime _nextRetryAt = DateTime.fromMillisecondsSinceEpoch(0);
+  Future<void> _localWriteQueue = Future<void>.value();
+  final StreamController<TournamentSyncStatus> _syncStatusController =
+      StreamController<TournamentSyncStatus>.broadcast();
+  TournamentSyncStatus _syncStatus = const TournamentSyncStatus(
+    TournamentSyncState.localOnly,
+    'Saved locally',
+  );
   List<String> _tatamiOrder = const <String>[];
 
   bool _initialized = false;
 
   TournamentRepository({
     TournamentLocalStore? localStore,
+    TournamentBackend? backend,
     this.tournamentId = '',
-  }) : _localStore = localStore ?? TournamentLocalStore();
+  }) : _localStore = localStore ?? TournamentLocalStore(),
+       _backend = backend ?? TournamentBackend();
 
   Future<void> initialize({
     required List<TatamiDefinition> defaultTatamis,
@@ -56,13 +78,7 @@ class TournamentRepository {
 
     await _loadSnapshot();
     if (tournamentId.trim().isNotEmpty) {
-      final remoteSnapshot = await _backend.loadTournamentSnapshot(
-        tournamentId,
-      );
-      if (remoteSnapshot.isNotEmpty) {
-        _lastLocalUpdatedAt = _snapshotUpdatedAt(remoteSnapshot);
-        _applySnapshot(remoteSnapshot);
-      }
+      await synchronize();
     }
 
     if (_tatamiOrder.isEmpty) {
@@ -77,6 +93,14 @@ class TournamentRepository {
     _emitDivisions();
     _initialized = true;
     _startRemoteSync();
+  }
+
+  Stream<TournamentSyncStatus> watchSyncStatus() =>
+      _watchWithInitial(_syncStatus, _syncStatusController.stream);
+
+  void _setSyncStatus(TournamentSyncState state, String message) {
+    _syncStatus = TournamentSyncStatus(state, message);
+    if (!_disposed) _syncStatusController.add(_syncStatus);
   }
 
   Stream<List<Competitor>> watchCompetitors() {
@@ -218,7 +242,6 @@ class TournamentRepository {
     }
     for (final tatamiName in removedTatamis) {
       _tatamiAssignments.remove(tatamiName);
-      _tatamiLogsByTatami.remove(tatamiName);
       _tatamiJudgeCounts.remove(tatamiName);
     }
     _emitTatamiNames();
@@ -291,6 +314,10 @@ class TournamentRepository {
   }
 
   Future<void> saveCompetitor(Competitor competitor) async {
+    _validateCompetitorReplacement([
+      ..._competitors.where((item) => item.id != competitor.id),
+      competitor,
+    ]);
     final index = _competitors.indexWhere((item) => item.id == competitor.id);
     if (index == -1) {
       _competitors.add(competitor);
@@ -302,6 +329,16 @@ class TournamentRepository {
   }
 
   Future<void> deleteCompetitor(String competitorId) async {
+    _ensureCompetitorsUnlocked({competitorId});
+    if (_divisions.any(
+      (division) =>
+          division.competitorIds.contains(competitorId) &&
+          division.competitorIds.length <= 2,
+    )) {
+      throw StateError(
+        'Remove this competitor from its queued divisions first.',
+      );
+    }
     _competitors.removeWhere((item) => item.id == competitorId);
     for (var index = 0; index < _divisions.length; index++) {
       final division = _divisions[index];
@@ -317,6 +354,15 @@ class TournamentRepository {
   }
 
   Future<void> replaceCompetitors(List<Competitor> competitors) async {
+    _validateCompetitorReplacement(competitors);
+    final replacementIds = competitors.map((item) => item.id).toSet();
+    for (final division in _divisions) {
+      if (division.competitorIds.where(replacementIds.contains).length < 2) {
+        throw StateError(
+          'Import would leave "${division.title}" with fewer than two competitors.',
+        );
+      }
+    }
     _competitors
       ..clear()
       ..addAll(competitors);
@@ -337,6 +383,11 @@ class TournamentRepository {
   }
 
   Future<void> clearTournamentData() async {
+    if (_divisions.any(divisionHasResults)) {
+      throw StateError(
+        'Redo started divisions before clearing tournament data.',
+      );
+    }
     _competitors.clear();
     _divisions.clear();
 
@@ -373,11 +424,57 @@ class TournamentRepository {
     if (divisionIndex == -1) {
       return;
     }
+    final existing = _divisions[divisionIndex];
+    if (existing.assignedTatamiName != tatamiName ||
+        (inProgressMatch != null &&
+            existing.progress != DivisionProgress.running)) {
+      return;
+    }
     _divisions[divisionIndex] = _divisions[divisionIndex].copyWith(
       inProgressMatch: inProgressMatch,
     );
     _emitDivisions();
     await _persist();
+  }
+
+  Future<void> setTournamentUserPassword(String password) {
+    if (tournamentId.trim().isEmpty) {
+      throw StateError('A tournament ID is required.');
+    }
+    return _backend.setTournamentUserPassword(tournamentId, password);
+  }
+
+  Future<void> deleteTournament() async {
+    if (_disposed || tournamentId.trim().isEmpty) {
+      throw StateError('This tournament cannot be deleted.');
+    }
+    if (_deleting) return;
+
+    _deleting = true;
+    _remoteSyncTimer?.cancel();
+    try {
+      final syncOperation = _syncOperation;
+      if (syncOperation != null) await syncOperation;
+      await _localWriteQueue;
+      await _backend.deleteTournament(tournamentId);
+
+      _competitors.clear();
+      _divisions.clear();
+      _tatamiAssignments.clear();
+      _tatamiOrder = const <String>[];
+      _tatamiJudgeCounts.clear();
+      _tatamiLogsByTatami.clear();
+      _liveMatchStates.clear();
+      _syncBase = <String, dynamic>{};
+      _pendingRemoteSnapshot = null;
+      _emitAll();
+      await _localStore.clearTournamentData(tournamentId: tournamentId);
+      _setSyncStatus(TournamentSyncState.localOnly, 'Tournament deleted');
+    } catch (_) {
+      _deleting = false;
+      _startRemoteSync();
+      rethrow;
+    }
   }
 
   Future<void> saveDivisionExecutionState(
@@ -393,6 +490,13 @@ class TournamentRepository {
     if (divisionIndex == -1) {
       throw StateError('Division not found.');
     }
+    final existing = _divisions[divisionIndex];
+    if (existing.assignedTatamiName != tatamiName ||
+        existing.progress != DivisionProgress.running) {
+      throw StateError(
+        'Division is no longer running on this tatami. Reopen it from the competition floor.',
+      );
+    }
 
     _divisions[divisionIndex] = _divisions[divisionIndex].copyWith(
       matchRecords: List<DivisionMatchRecord>.from(matchRecords),
@@ -407,6 +511,10 @@ class TournamentRepository {
     String tatamiName,
     String divisionId,
   ) async {
+    await synchronize();
+    if (_syncStatus.state == TournamentSyncState.conflict) {
+      throw StateError(_syncStatus.message);
+    }
     final divisionIndex = _divisions.indexWhere(
       (item) => item.id == divisionId,
     );
@@ -416,6 +524,18 @@ class TournamentRepository {
     if (!_tatamiOrder.contains(tatamiName)) {
       throw StateError('Tatami "$tatamiName" does not exist.');
     }
+
+    final existing = _divisions[divisionIndex];
+    if (existing.assignedTatamiName != tatamiName) {
+      throw StateError(
+        'Division has moved to another tatami. Reopen it there.',
+      );
+    }
+    if (existing.progress == DivisionProgress.completed) {
+      throw StateError('Redo a completed division before starting it.');
+    }
+    _ensureTatamiAvailable(tatamiName, divisionId);
+    if (existing.progress == DivisionProgress.running) return;
 
     final division = _divisions[divisionIndex].copyWith(
       progress: DivisionProgress.running,
@@ -436,6 +556,10 @@ class TournamentRepository {
     _emitTatami();
     _emitTatamiLogs();
     await _persist();
+    await synchronize();
+    if (_syncStatus.state == TournamentSyncState.conflict) {
+      throw StateError(_syncStatus.message);
+    }
   }
 
   Future<void> completeDivisionOnTatami(
@@ -447,6 +571,15 @@ class TournamentRepository {
     );
     if (divisionIndex == -1) {
       throw StateError('Division not found.');
+    }
+
+    final existing = _divisions[divisionIndex];
+    if (existing.assignedTatamiName != tatamiName) {
+      throw StateError('Division has moved to another tatami.');
+    }
+    if (existing.progress == DivisionProgress.completed) return;
+    if (existing.progress != DivisionProgress.running) {
+      throw StateError('Start the division before completing it.');
     }
 
     final division = _divisions[divisionIndex].copyWith(
@@ -482,6 +615,9 @@ class TournamentRepository {
     if (divisionIndex == -1) {
       throw StateError('Division not found.');
     }
+    if (!_tatamiOrder.contains(tatamiName)) {
+      throw StateError('Tatami "$tatamiName" does not exist.');
+    }
 
     final division = _divisions[divisionIndex].copyWith(
       progress: DivisionProgress.queued,
@@ -491,6 +627,7 @@ class TournamentRepository {
       assignedTatamiName: tatamiName,
       matchRecords: const <DivisionMatchRecord>[],
       placements: const <DivisionPlacement>[],
+      inProgressMatch: null,
     );
     _divisions[divisionIndex] = division;
     _emitDivisions();
@@ -500,6 +637,11 @@ class TournamentRepository {
   }
 
   Future<void> deleteDivision(String divisionId) async {
+    if (_divisions.any(
+      (division) => division.id == divisionId && divisionHasResults(division),
+    )) {
+      throw StateError('Redo the division before deleting it.');
+    }
     _divisions.removeWhere((division) => division.id == divisionId);
     for (final entry in _tatamiAssignments.entries) {
       if (entry.value.divisionId == divisionId) {
@@ -525,6 +667,40 @@ class TournamentRepository {
 
     Division? previousDivision;
     final index = _divisions.indexWhere((item) => item.id == division.id);
+    if (index != -1) {
+      previousDivision = _divisions[index];
+      if (divisionHasResults(previousDivision) &&
+          !sameDivisionBracket(previousDivision, division)) {
+        throw StateError(
+          'Redo the division before changing its entrants, draw order, or competition criteria.',
+        );
+      }
+      division = division.copyWith(
+        progress: previousDivision.progress,
+        startedAt: previousDivision.startedAt,
+        completedAt: previousDivision.completedAt,
+        priorityBoostedAt: previousDivision.priorityBoostedAt,
+        matchRecords: previousDivision.matchRecords,
+        placements: previousDivision.placements,
+        inProgressMatch: previousDivision.inProgressMatch,
+      );
+    } else {
+      division = division.copyWith(
+        progress: DivisionProgress.queued,
+        startedAt: null,
+        completedAt: null,
+        matchRecords: [],
+        placements: [],
+        inProgressMatch: null,
+      );
+    }
+    final prospective = _buildSnapshot();
+    prospective['divisions'] = [
+      for (final item in _divisions.where((item) => item.id != division.id))
+        {'id': item.id, 'data': item.toMap()},
+      {'id': division.id, 'data': division.toMap()},
+    ];
+    validateTournamentSnapshot(_buildSnapshot(), prospective);
     if (index == -1) {
       _divisions.add(division);
     } else {
@@ -567,9 +743,16 @@ class TournamentRepository {
     }
 
     if (divisionId != null) {
+      final selected = _divisions.where((item) => item.id == divisionId);
+      if (selected.isEmpty) throw StateError('Division not found.');
+      if (selected.single.progress == DivisionProgress.running) {
+        _ensureTatamiAvailable(tatamiName, divisionId);
+      }
       for (final entry in _tatamiAssignments.entries) {
         if (entry.value.divisionId == divisionId && entry.key != tatamiName) {
-          _tatamiAssignments[entry.key] = entry.value.copyWith(divisionId: null);
+          _tatamiAssignments[entry.key] = entry.value.copyWith(
+            divisionId: null,
+          );
         }
       }
 
@@ -605,53 +788,156 @@ class TournamentRepository {
     }
 
     _remoteSyncTimer?.cancel();
-    _remoteSyncTimer = Timer.periodic(const Duration(seconds: 2), (_) async {
-      if (_remoteSyncInProgress ||
-          _remoteWriteInProgress ||
-          _pendingRemoteSnapshot != null) {
-        return;
-      }
-      _remoteSyncInProgress = true;
-      try {
-        final remoteSnapshot = await _backend.loadTournamentSnapshot(
-          tournamentId,
-        );
-        if (remoteSnapshot.isEmpty) {
-          return;
-        }
-
-        final remoteUpdatedAt = _snapshotUpdatedAt(remoteSnapshot);
-        if (_lastLocalUpdatedAt != null &&
-            remoteUpdatedAt != null &&
-            !remoteUpdatedAt.isAfter(_lastLocalUpdatedAt!)) {
-          return;
-        }
-
-        if (_initialized) {
-          _applySnapshot(remoteSnapshot);
-          _lastLocalUpdatedAt = remoteUpdatedAt;
-          _emitCompetitors();
-          _emitDivisions();
-          _emitTatamiNames();
-          _emitTatamiDefinitions();
-          _emitTatami();
-          _emitTatamiLogs();
-        }
-      } catch (_) {
-        // Intentionally ignore refresh errors so a temporary backend hiccup does not
-        // break the local tournament flow.
-      } finally {
-        _remoteSyncInProgress = false;
-      }
+    _remoteSyncTimer = Timer.periodic(const Duration(seconds: 2), (_) {
+      if (DateTime.now().isBefore(_nextRetryAt)) return;
+      unawaited(synchronize());
     });
   }
 
-  DateTime? _snapshotUpdatedAt(Map<String, dynamic> snapshot) {
-    final raw = snapshot['updated_at'];
-    if (raw is! String || raw.trim().isEmpty) {
-      return null;
+  Future<void> synchronize() {
+    if (_disposed || _deleting || tournamentId.trim().isEmpty) {
+      return Future<void>.value();
     }
-    return DateTime.tryParse(raw)?.toUtc();
+    return _syncOperation ??= _synchronize().whenComplete(() {
+      _syncOperation = null;
+    });
+  }
+
+  Future<void> _synchronize() async {
+    _setSyncStatus(TournamentSyncState.syncing, 'Synchronizing');
+    try {
+      await _localWriteQueue;
+      for (
+        var attempt = 0;
+        attempt < 4 && !_disposed && !_deleting;
+        attempt++
+      ) {
+        final remote = await _backend.loadTournamentSnapshot(tournamentId);
+        if (_disposed || _deleting) return;
+        if (_pendingRemoteSnapshot == null) {
+          _syncBase = remote;
+          if (remote.isNotEmpty) {
+            _applySnapshot(remote);
+            _emitAll();
+            await _saveLocalState();
+          }
+          break;
+        }
+        final generation = _localGeneration;
+        final sent = _pendingRemoteSnapshot!;
+        final candidate = mergeTournamentSnapshots(
+          base: _syncBase,
+          local: sent,
+          remote: remote,
+        );
+        try {
+          validateTournamentSnapshot(remote, candidate);
+        } on StateError catch (error) {
+          throw TournamentSyncConflict(error.message);
+        }
+        final saved = await _backend.saveTournamentSnapshot(
+          tournamentId,
+          candidate,
+          expectedRevision: (remote['revision'] as num?)?.toInt() ?? 0,
+        );
+        if (_disposed || _deleting) return;
+        if (saved == null) {
+          if (attempt == 3) {
+            throw const TournamentSyncConflict(
+              'Other operators are saving. Local changes are retained; retry synchronization.',
+            );
+          }
+          continue;
+        }
+        final latest = _buildSnapshot();
+        if (generation == _localGeneration) {
+          _syncBase = saved;
+          _pendingRemoteSnapshot = null;
+          _applySnapshot(saved);
+        } else {
+          final rebased = mergeTournamentSnapshots(
+            base: sent,
+            local: latest,
+            remote: saved,
+          );
+          _syncBase = saved;
+          _applySnapshot(rebased);
+          _pendingRemoteSnapshot = rebased;
+        }
+        _emitAll();
+        await _saveLocalState();
+        if (_pendingRemoteSnapshot == null) break;
+      }
+      _retryFailures = 0;
+      _nextRetryAt = DateTime.fromMillisecondsSinceEpoch(0);
+      _setSyncStatus(
+        _pendingRemoteSnapshot == null
+            ? TournamentSyncState.synced
+            : TournamentSyncState.offline,
+        _pendingRemoteSnapshot == null
+            ? 'Synchronized'
+            : 'Saved locally; synchronization pending',
+      );
+    } on TournamentSyncConflict catch (error) {
+      _nextRetryAt = DateTime.now().add(const Duration(seconds: 30));
+      _setSyncStatus(TournamentSyncState.conflict, error.message);
+    } catch (error) {
+      _retryFailures = (_retryFailures + 1).clamp(1, 5);
+      _nextRetryAt = DateTime.now().add(Duration(seconds: 1 << _retryFailures));
+      _setSyncStatus(
+        TournamentSyncState.offline,
+        'Saved locally; synchronization pending: $error',
+      );
+    }
+  }
+
+  void _emitAll() {
+    _emitCompetitors();
+    _emitDivisions();
+    _emitTatamiNames();
+    _emitTatamiDefinitions();
+    _emitTatami();
+    _emitTatamiLogs();
+  }
+
+  void _ensureTatamiAvailable(String tatamiName, String divisionId) {
+    if (_divisions.any(
+      (division) =>
+          division.id != divisionId &&
+          division.assignedTatamiName == tatamiName &&
+          division.progress == DivisionProgress.running,
+    )) {
+      throw StateError(
+        'Another division is already running on $tatamiName. Finish or redo it first.',
+      );
+    }
+  }
+
+  void _ensureCompetitorsUnlocked(Set<String> ids) {
+    if (_divisions.any(
+      (division) =>
+          divisionHasResults(division) &&
+          division.competitorIds.any(ids.contains),
+    )) {
+      throw StateError(
+        'Competitors in started divisions cannot be edited or removed. Redo the divisions first.',
+      );
+    }
+  }
+
+  void _validateCompetitorReplacement(List<Competitor> replacements) {
+    final ids = replacements.map((item) => item.id).toSet();
+    final numbers = replacements.map((item) => item.number).toSet();
+    if (ids.length != replacements.length ||
+        numbers.length != replacements.length) {
+      throw StateError('Competitor IDs and numbers must be unique.');
+    }
+    for (final previous in _competitors) {
+      final matches = replacements.where((item) => item.id == previous.id);
+      if (matches.isEmpty || !sameCompetitor(matches.single, previous)) {
+        _ensureCompetitorsUnlocked({previous.id});
+      }
+    }
   }
 
   void _applySnapshot(Map<String, dynamic> snapshot) {
@@ -728,7 +1014,18 @@ class TournamentRepository {
               final tatamiName = (item['tatamiName'] as String?) ?? '';
               final logs = asMapList(item['entries'])
                   .map(TatamiLogEntry.fromMap)
+                  .map(
+                    (entry) => entry.lifecycleEntry(
+                      division: _divisions
+                          .where((division) => division.id == entry.divisionId)
+                          .firstOrNull,
+                    ),
+                  )
+                  .whereType<TatamiLogEntry>()
                   .toList();
+              logs.sort(
+                (left, right) => right.timestamp.compareTo(left.timestamp),
+              );
               return MapEntry(tatamiName, logs);
             })
             .where((entry) => entry.key.isNotEmpty),
@@ -749,13 +1046,34 @@ class TournamentRepository {
     if (snapshot == null) {
       return;
     }
-    _lastLocalUpdatedAt = _snapshotUpdatedAt(snapshot);
     _applySnapshot(snapshot);
+    final storedBase = snapshot['_syncBase'];
+    _syncBase = storedBase is Map
+        ? Map<String, dynamic>.from(storedBase)
+        : <String, dynamic>{};
+    if (snapshot['_syncPending'] != false && tournamentId.isNotEmpty) {
+      _pendingRemoteSnapshot = _buildSnapshot();
+    }
   }
 
   Future<void> _persist() async {
+    _localGeneration++;
+    if (tournamentId.trim().isNotEmpty) {
+      _pendingRemoteSnapshot = _buildSnapshot();
+    }
+    await _saveLocalState();
+    if (!_disposed &&
+        _initialized &&
+        !_deleting &&
+        tournamentId.trim().isNotEmpty &&
+        !DateTime.now().isBefore(_nextRetryAt)) {
+      unawaited(synchronize());
+    }
+  }
+
+  Map<String, dynamic> _buildSnapshot() {
     final timestamp = DateTime.now().toUtc().toIso8601String();
-    final snapshot = <String, dynamic>{
+    return <String, dynamic>{
       'updated_at': timestamp,
       'competitors': _competitors
           .map(
@@ -779,7 +1097,7 @@ class TournamentRepository {
       'tatamiAssignments': _orderedTatamiAssignments()
           .map((assignment) => assignment.toMap())
           .toList(),
-      'tatamiLogs': _tatamiOrder
+      'tatamiLogs': _tatamiLogsByTatami.keys
           .map(
             (tatamiName) => <String, Object?>{
               'tatamiName': tatamiName,
@@ -791,36 +1109,37 @@ class TournamentRepository {
           )
           .toList(),
     };
-
-    _lastLocalUpdatedAt = DateTime.parse(timestamp).toUtc();
-    await _localStore.saveSnapshot(snapshot, tournamentId: tournamentId);
-    if (tournamentId.trim().isNotEmpty) {
-      _pendingRemoteSnapshot = snapshot;
-      unawaited(_flushRemoteSnapshots());
-    }
   }
 
-  Future<void> _flushRemoteSnapshots() async {
-    if (_remoteWriteInProgress) {
-      return;
-    }
-    _remoteWriteInProgress = true;
-    try {
-      while (_pendingRemoteSnapshot != null) {
-        final snapshot = _pendingRemoteSnapshot!;
-        _pendingRemoteSnapshot = null;
-        try {
-          await _backend.saveTournamentSnapshot(tournamentId, snapshot);
-        } catch (_) {
-          // Local persistence remains authoritative during transient outages.
-        }
-      }
-    } finally {
-      _remoteWriteInProgress = false;
-      if (_pendingRemoteSnapshot != null) {
-        unawaited(_flushRemoteSnapshots());
-      }
-    }
+  Future<void> _saveLocalState() {
+    final snapshot = <String, dynamic>{
+      ..._buildSnapshot(),
+      '_syncBase': _syncBase,
+      '_syncPending': _pendingRemoteSnapshot != null,
+    };
+    final write = _localWriteQueue.then(
+      (_) => _localStore.saveSnapshot(snapshot, tournamentId: tournamentId),
+    );
+    _localWriteQueue = write.catchError((Object error) {
+      _setSyncStatus(TournamentSyncState.offline, 'Local save failed: $error');
+    });
+    return write;
+  }
+
+  Future<void> dispose() async {
+    _disposed = true;
+    _remoteSyncTimer?.cancel();
+    await _localWriteQueue;
+    await Future.wait([
+      _competitorsController.close(),
+      _divisionsController.close(),
+      _tatamiController.close(),
+      _tatamiNamesController.close(),
+      _tatamiDefinitionsController.close(),
+      _tatamiLogsController.close(),
+      _syncStatusController.close(),
+      ..._liveMatchControllers.values.map((controller) => controller.close()),
+    ]);
   }
 
   Stream<T> _watchWithInitial<T>(T initialValue, Stream<T> updates) async* {
@@ -908,7 +1227,7 @@ class TournamentRepository {
       division.id,
       '$activity: ${division.title} (${division.competitorIds.length} competitors)',
       divisionTitle: division.title,
-      activity: activity,
+      activity: activity.startsWith('Moved ') ? 'Moved' : activity,
       competitorCount: division.competitorIds.length,
     );
   }
@@ -938,9 +1257,6 @@ class TournamentRepository {
         timestamp: DateTime.now().millisecondsSinceEpoch,
       ),
     );
-    if (entries.length > 200) {
-      entries.removeRange(200, entries.length);
-    }
   }
 
   List<TatamiDefinition> _currentTatamiDefinitions() {
@@ -953,5 +1269,4 @@ class TournamentRepository {
         )
         .toList();
   }
-
 }

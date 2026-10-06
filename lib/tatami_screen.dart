@@ -9,6 +9,7 @@ import 'live_match_state.dart';
 import 'tournament_models.dart';
 
 class TatamiScreen extends StatefulWidget {
+  final String tournamentId;
   final Stream<List<TatamiDefinition>> Function() watchTatamiDefinitions;
   final Stream<List<Division>> Function() watchDivisions;
   final Stream<List<Competitor>> Function() watchCompetitors;
@@ -41,6 +42,7 @@ class TatamiScreen extends StatefulWidget {
 
   const TatamiScreen({
     super.key,
+    this.tournamentId = '',
     required this.watchTatamiDefinitions,
     required this.watchDivisions,
     required this.watchCompetitors,
@@ -432,6 +434,7 @@ class _TatamiScreenState extends State<TatamiScreen> {
       context,
       MaterialPageRoute(
         builder: (context) => CompetitionExecutionScreen(
+          tournamentId: widget.tournamentId,
           tatamiName: selectedTatamiName,
           division: division,
           competitors: _divisionCompetitors(division),
@@ -456,6 +459,7 @@ class _TatamiScreenState extends State<TatamiScreen> {
       context,
       MaterialPageRoute(
         builder: (context) => CompetitionResultsScreen(
+          tournamentId: widget.tournamentId,
           division: division,
           competitors: _divisionCompetitors(division),
         ),
@@ -468,6 +472,7 @@ class _TatamiScreenState extends State<TatamiScreen> {
       context,
       MaterialPageRoute(
         builder: (context) => DrawSheetScreen(
+          tournamentId: widget.tournamentId,
           division: division,
           competitors: _divisionCompetitors(division),
         ),

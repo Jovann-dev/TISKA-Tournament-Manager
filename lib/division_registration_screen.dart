@@ -250,6 +250,7 @@ class _DivisionRegistrationScreenState
               const <DivisionMatchRecord>[],
           placements:
               currentEditingDivision?.placements ?? const <DivisionPlacement>[],
+          inProgressMatch: currentEditingDivision?.inProgressMatch,
         ),
       );
       if (!mounted) {
@@ -596,11 +597,11 @@ class _DivisionRegistrationScreenState
                                             ReorderableDragStartListener(
                                               index: index,
                                               child: Tooltip(
-                                                message:
-                                                    'Reorder draw sheet position',
+                                                message: 'Reorder draw sheet position',
                                                 child: Padding(
-                                                  padding:
-                                                      const EdgeInsets.all(12),
+                                                  padding: const EdgeInsets.all(
+                                                    12,
+                                                  ),
                                                   child: Icon(
                                                     Icons.drag_handle,
                                                     color: isSubmitting
@@ -655,8 +656,7 @@ class _DivisionRegistrationScreenState
                                   spacing: 8,
                                   runSpacing: 4,
                                   alignment: WrapAlignment.spaceBetween,
-                                  crossAxisAlignment:
-                                      WrapCrossAlignment.center,
+                                  crossAxisAlignment: WrapCrossAlignment.center,
                                   children: [
                                     Text(
                                       'Suggested competitors in range',
@@ -669,9 +669,7 @@ class _DivisionRegistrationScreenState
                                           suggestions.isEmpty || isSubmitting
                                           ? null
                                           : _addSuggestedCompetitors,
-                                      child: const Text(
-                                        'Add All Suggestions',
-                                      ),
+                                      child: const Text('Add All Suggestions'),
                                     ),
                                   ],
                                 ),

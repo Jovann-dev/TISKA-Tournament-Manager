@@ -4,11 +4,13 @@ import 'tournament_local_store.dart';
 import 'tournament_models.dart';
 
 class DrawSheetScreen extends StatelessWidget {
+  final String tournamentId;
   final Division division;
   final List<Competitor> competitors;
 
   const DrawSheetScreen({
     super.key,
+    this.tournamentId = '',
     required this.division,
     required this.competitors,
   });
@@ -39,6 +41,7 @@ class DrawSheetScreen extends StatelessWidget {
       'id': DateTime.now().microsecondsSinceEpoch.toString(),
       'savedAt': DateTime.now().millisecondsSinceEpoch,
       'divisionId': division.id,
+      'tournamentId': tournamentId,
       'divisionTitle': division.title,
       'division': <String, Object?>{
         'id': division.id,
@@ -59,7 +62,20 @@ class DrawSheetScreen extends StatelessWidget {
       }).toList(),
     };
 
-    await store.prependDrawSheetSnapshot(snapshot);
+    try {
+      await store.prependDrawSheetSnapshot(
+        snapshot,
+        tournamentId: tournamentId,
+      );
+    } catch (error) {
+      if (!context.mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Unable to save draw sheet snapshot: $error')),
+      );
+      return;
+    }
     if (!context.mounted) {
       return;
     }

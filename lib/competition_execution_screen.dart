@@ -7,6 +7,7 @@ import 'live_match_state.dart';
 import 'tournament_models.dart';
 
 class CompetitionExecutionScreen extends StatefulWidget {
+  final String tournamentId;
   final String tatamiName;
   final Division division;
   final List<Competitor> competitors;
@@ -35,6 +36,7 @@ class CompetitionExecutionScreen extends StatefulWidget {
 
   const CompetitionExecutionScreen({
     super.key,
+    this.tournamentId = '',
     required this.tatamiName,
     required this.division,
     required this.competitors,
@@ -62,6 +64,7 @@ class _CompetitionExecutionScreenState
   List<_CompetitorSource> _repechageFinalistSources =
       const <_CompetitorSource>[];
   bool _initializing = true;
+  String? _initializationError;
   bool _isSubmitting = false;
   late int _judgesCount;
   int _competitorAFlags = 0;
@@ -81,6 +84,7 @@ class _CompetitionExecutionScreenState
   final List<DivisionMatchEventRecord> _jiyuEvents =
       <DivisionMatchEventRecord>[];
   DivisionInProgressMatch? _pendingHydrateInProgress;
+  bool _resumeRestoredTimer = false;
 
   @override
   void initState() {
@@ -159,19 +163,19 @@ class _CompetitionExecutionScreenState
   }
 
   Future<void> _prepareCompetition() async {
-    if (widget.division.progress != DivisionProgress.running) {
+    try {
       await widget.onStartDivision(widget.tatamiName, widget.division.id);
+      await _autoReusePreviousResults();
+      if (!mounted) return;
+      setState(() => _initializing = false);
+      _publishLiveState();
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _initializing = false;
+        _initializationError = error.toString();
+      });
     }
-    await _autoReusePreviousResults();
-    if (!mounted) {
-      return;
-    }
-    // Note: _autoReusePreviousResults already prepared the jiyu state (and
-    // hydrated any saved in-progress match); don't force-reset it again here.
-    setState(() {
-      _initializing = false;
-    });
-    _publishLiveState();
   }
 
   _ResolvedMatch? get _currentMatch => _currentMatchFrom(_results);
@@ -306,6 +310,9 @@ class _CompetitionExecutionScreenState
                 competitorBWarningStage: _jiyuBWarningStage,
                 period: _jiyuPeriod,
                 timerRemainingSeconds: _jiyuTimeRemaining.inSeconds,
+                timerRemainingMilliseconds: _jiyuTimeRemaining.inMilliseconds,
+                timerRunning: _jiyuTimerRunning,
+                timerEndsAtMillis: _jiyuTimerEndsAt?.millisecondsSinceEpoch,
                 events: List<DivisionMatchEventRecord>.from(_jiyuEvents),
               ),
       ),
@@ -360,6 +367,7 @@ class _CompetitionExecutionScreenState
     }
 
     _disposeJiyuTimer();
+    _resumeRestoredTimer = false;
     _jiyuActiveMatchId = currentMatch.match.id;
     _jiyuPeriod = 1;
     _jiyuBaseDuration = _defaultJiyuDurationForMatch(currentMatch);
@@ -378,13 +386,9 @@ class _CompetitionExecutionScreenState
       _jiyuEvents
         ..clear()
         ..addAll(pending.events);
-      final restoredRemaining = Duration(
-        seconds: pending.timerRemainingSeconds,
-      );
-      _jiyuTimeRemaining = restoredRemaining > Duration.zero
-          ? restoredRemaining
-          : _jiyuBaseDuration;
+      _jiyuTimeRemaining = pending.remainingAt(DateTime.now());
       _jiyuTimerExpired = _jiyuTimeRemaining <= Duration.zero;
+      _resumeRestoredTimer = pending.timerRunning && !_jiyuTimerExpired;
     }
   }
 
@@ -427,6 +431,7 @@ class _CompetitionExecutionScreenState
           _jiyuTimerEndsAt = null;
         });
         _publishLiveState();
+        _persistInProgressMatch();
         timer.cancel();
         return;
       }
@@ -1208,6 +1213,10 @@ class _CompetitionExecutionScreenState
         ..addAll(updatedResults);
       _prepareJiyuStateForCurrentMatch(force: true);
     });
+    if (_resumeRestoredTimer) {
+      _resumeRestoredTimer = false;
+      _startOrContinueJiyuTimer();
+    }
     _publishLiveState();
     _persistInProgressMatch();
     await widget.onSaveExecutionState(
@@ -1440,6 +1449,7 @@ class _CompetitionExecutionScreenState
         context,
         MaterialPageRoute(
           builder: (context) => CompetitionResultsScreen(
+            tournamentId: widget.tournamentId,
             division: completedDivision,
             competitors: widget.competitors,
           ),
@@ -1492,6 +1502,24 @@ class _CompetitionExecutionScreenState
       appBar: AppBar(title: Text('${widget.tatamiName} Competition')),
       body: _initializing
           ? const Center(child: CircularProgressIndicator())
+          : _initializationError != null
+          ? Center(
+              child: Padding(
+                padding: const EdgeInsets.all(24),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(_initializationError!, textAlign: TextAlign.center),
+                    const SizedBox(height: 16),
+                    TextButton.icon(
+                      onPressed: () => Navigator.pop(context),
+                      icon: const Icon(Icons.arrow_back),
+                      label: const Text('Competition Floor'),
+                    ),
+                  ],
+                ),
+              ),
+            )
           : ListView(
               padding: const EdgeInsets.all(20),
               children: [

@@ -289,6 +289,36 @@ class _CompetitorRegistrationScreenState
         for (final competitor in imported) competitor.number: competitor,
       };
 
+      if (!mounted) return;
+      final replacementIds = dedupedByNumber.values
+          .map((item) => item.id)
+          .toSet();
+      final removedCount = widget.competitors
+          .where((item) => !replacementIds.contains(item.id))
+          .length;
+      final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('Replace competitor registrations?'),
+          content: Text(
+            '${dedupedByNumber.length} registrations will be imported; '
+            '$removedCount existing registrations will be removed. '
+            'Changes affecting started divisions will be rejected.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton.icon(
+              onPressed: () => Navigator.pop(context, true),
+              icon: const Icon(Icons.file_upload_outlined),
+              label: const Text('Import'),
+            ),
+          ],
+        ),
+      );
+      if (confirmed != true || !mounted) return;
       await widget.onReplaceCompetitors(dedupedByNumber.values.toList());
       if (!kIsWeb) {
         _activeSpreadsheetPath = file.path;
