@@ -1,6 +1,6 @@
-enum Gender { male, female }
+enum Gender { male, female, notSpecified }
 
-enum DivisionGender { mixed, maleOnly, femaleOnly }
+enum DivisionGender { mixed, maleOnly, femaleOnly, notSpecifiedOnly }
 
 enum CompetitionType {
   kata,
@@ -16,6 +16,66 @@ enum DivisionProgress { queued, running, completed }
 
 enum CompetitionExecutionMode { flagVoting, manualWinner }
 
+enum CompetitionTemplate { flagVoting, points }
+
+extension CompetitionTemplateDetails on CompetitionTemplate {
+  String get label => switch (this) {
+    CompetitionTemplate.flagVoting => 'Flag-Based Scoring',
+    CompetitionTemplate.points => 'Points-Based Scoring',
+  };
+
+  CompetitionExecutionMode get executionMode => switch (this) {
+    CompetitionTemplate.flagVoting => CompetitionExecutionMode.flagVoting,
+    CompetitionTemplate.points => CompetitionExecutionMode.manualWinner,
+  };
+}
+
+class CompetitionCategory {
+  final String id;
+  final String name;
+  final CompetitionTemplate template;
+  final bool enabled;
+
+  const CompetitionCategory({
+    required this.id, required this.name, required this.template,
+    this.enabled = true,
+  });
+
+  CompetitionType get legacyType => template == CompetitionTemplate.points
+      ? CompetitionType.jiyuKumite : parseCompetitionType(id);
+
+  CompetitionCategory copyWith({bool? enabled}) => CompetitionCategory(
+    id: id, name: name, template: template, enabled: enabled ?? this.enabled,
+  );
+
+  Map<String, Object?> toMap() => {
+    'id': id, 'name': name, 'template': template.name, 'enabled': enabled,
+  };
+
+  factory CompetitionCategory.fromMap(Map<String, dynamic> map) {
+    final id = map['id'];
+    final name = map['name'];
+    if (id is! String || id.trim().isEmpty || name is! String || name.trim().isEmpty ||
+        map['enabled'] is! bool) {
+      throw const FormatException('Invalid competition category.');
+    }
+    return CompetitionCategory(
+      id: id, name: name.trim(),
+      template: CompetitionTemplate.values.byName(map['template'] as String),
+      enabled: map['enabled'] as bool,
+    );
+  }
+}
+
+List<CompetitionCategory> defaultCompetitionCategories() => [
+  for (final type in CompetitionType.values)
+    CompetitionCategory(
+      id: type.name, name: type.label,
+      template: type == CompetitionType.jiyuKumite
+          ? CompetitionTemplate.points : CompetitionTemplate.flagVoting,
+    ),
+];
+
 enum KumiteEventKind { wazaAri, ippon, warning, shikaku }
 
 enum KumiteWarningType { jogai, mobobi, contact }
@@ -25,7 +85,11 @@ enum KumiteWarningStage { first, second, third }
 enum KumiteFinishReason { points, warning, shikaku, manual }
 
 extension GenderLabel on Gender {
-  String get label => this == Gender.male ? 'Male' : 'Female';
+  String get label => switch (this) {
+    Gender.male => 'Male',
+    Gender.female => 'Female',
+    Gender.notSpecified => 'Not Specified',
+  };
 }
 
 extension GenderCodec on Gender {
@@ -41,6 +105,8 @@ extension DivisionGenderLabel on DivisionGender {
         return 'Male';
       case DivisionGender.femaleOnly:
         return 'Female';
+      case DivisionGender.notSpecifiedOnly:
+        return 'Not Specified';
     }
   }
 }
@@ -344,6 +410,9 @@ class Competitor {
 class Division {
   final String id;
   final CompetitionType competitionType;
+  final String? competitionCategoryId;
+  final String? competitionCategoryName;
+  final CompetitionTemplate? competitionTemplate;
   final int minBeltRank;
   final int maxBeltRank;
   final int minAge;
@@ -363,6 +432,9 @@ class Division {
   const Division({
     required this.id,
     required this.competitionType,
+    this.competitionCategoryId,
+    this.competitionCategoryName,
+    this.competitionTemplate,
     required this.minBeltRank,
     required this.maxBeltRank,
     required this.minAge,
@@ -383,6 +455,9 @@ class Division {
   Division copyWith({
     String? id,
     CompetitionType? competitionType,
+    Object? competitionCategoryId = _unset,
+    Object? competitionCategoryName = _unset,
+    Object? competitionTemplate = _unset,
     int? minBeltRank,
     int? maxBeltRank,
     int? minAge,
@@ -402,6 +477,12 @@ class Division {
     return Division(
       id: id ?? this.id,
       competitionType: competitionType ?? this.competitionType,
+        competitionCategoryId: identical(competitionCategoryId, _unset)
+          ? this.competitionCategoryId : competitionCategoryId as String?,
+        competitionCategoryName: identical(competitionCategoryName, _unset)
+          ? this.competitionCategoryName : competitionCategoryName as String?,
+        competitionTemplate: identical(competitionTemplate, _unset)
+          ? this.competitionTemplate : competitionTemplate as CompetitionTemplate?,
       minBeltRank: minBeltRank ?? this.minBeltRank,
       maxBeltRank: maxBeltRank ?? this.maxBeltRank,
       minAge: minAge ?? this.minAge,
@@ -442,8 +523,18 @@ class Division {
     return 'Ages $minAge-$maxAge';
   }
 
-  String get title =>
-      '${competitionType.label}: ${gender.label} $beltRangeLabel, $ageRangeLabel';
+    String get categoryId => competitionCategoryId ?? competitionType.name;
+    String get competitionLabel => competitionCategoryName ?? competitionType.label;
+    CompetitionTemplate get scoringTemplate => competitionTemplate ??
+      (competitionType == CompetitionType.jiyuKumite
+        ? CompetitionTemplate.points : CompetitionTemplate.flagVoting);
+    CompetitionExecutionMode get executionMode => scoringTemplate.executionMode;
+    CompetitionType get scoringType => scoringTemplate == CompetitionTemplate.points
+        ? CompetitionType.jiyuKumite
+        : (competitionType == CompetitionType.jiyuKumite ? CompetitionType.kata : competitionType);
+
+    String get title =>
+      '$competitionLabel: ${gender.label} $beltRangeLabel, $ageRangeLabel';
 
   bool matchesCompetitor(Competitor competitor) {
     final beltMatches =
@@ -454,6 +545,7 @@ class Division {
       DivisionGender.mixed => true,
       DivisionGender.maleOnly => competitor.gender == Gender.male,
       DivisionGender.femaleOnly => competitor.gender == Gender.female,
+      DivisionGender.notSpecifiedOnly => competitor.gender == Gender.notSpecified,
     };
     return beltMatches && ageMatches && genderMatches;
   }
@@ -461,6 +553,9 @@ class Division {
   Map<String, Object?> toMap() {
     return <String, Object?>{
       'competitionType': competitionType.storageValue,
+      if (competitionCategoryId != null) 'competitionCategoryId': competitionCategoryId,
+      if (competitionCategoryName != null) 'competitionCategoryName': competitionCategoryName,
+      if (competitionTemplate != null) 'competitionTemplate': competitionTemplate!.name,
       'minBeltRank': minBeltRank,
       'maxBeltRank': maxBeltRank,
       'minAge': minAge,
@@ -483,6 +578,10 @@ class Division {
     return Division(
       id: id,
       competitionType: parseCompetitionType(map['competitionType'] as String?),
+        competitionCategoryId: map['competitionCategoryId'] as String?,
+        competitionCategoryName: map['competitionCategoryName'] as String?,
+        competitionTemplate: map['competitionTemplate'] == null ? null
+          : CompetitionTemplate.values.byName(map['competitionTemplate'] as String),
       minBeltRank: (map['minBeltRank'] as num?)?.toInt() ?? 1,
       maxBeltRank: (map['maxBeltRank'] as num?)?.toInt() ?? 10,
       minAge: (map['minAge'] as num?)?.toInt() ?? 0,
@@ -833,6 +932,22 @@ class TatamiAssignment {
 
 const Object _unset = Object();
 
+const List<String> kiddiesBeltColors = [
+  'None', 'White', 'Yellow', 'Orange', 'Green', 'Blue', 'Purple', 'Red', 'Black',
+];
+
+String normalizeKiddiesBeltColor(String? value) => kiddiesBeltColors.firstWhere(
+  (color) => color.toLowerCase() == value?.trim().toLowerCase(),
+  orElse: () => 'None',
+);
+
+String kiddiesBeltColor(String belt) {
+  final parts = belt.split(' - ');
+  return parts.length == 2 && parts.first.toLowerCase() == 'kiddies'
+      ? normalizeKiddiesBeltColor(parts.last)
+      : 'None';
+}
+
 const List<String> beltOrder = <String>[
   'White',
   'Kiddies',
@@ -891,10 +1006,11 @@ String beltLabelFromRank(int rank) {
 }
 
 Gender parseGender(String? value) {
-  return Gender.values.firstWhere(
-    (gender) => gender.name == value,
-    orElse: () => Gender.male,
-  );
+  return switch (value?.trim().toLowerCase()) {
+    'male' || 'm' => Gender.male,
+    'female' || 'f' => Gender.female,
+    _ => Gender.notSpecified,
+  };
 }
 
 DivisionGender parseDivisionGender(String? value) {

@@ -8,6 +8,7 @@ import 'package:flutter/material.dart';
 import 'package:screenshot/screenshot.dart';
 
 import 'browser_download.dart';
+import 'competition_categories_screen.dart';
 import 'competitor_registration_screen.dart';
 import 'division_process_log_spreadsheet_codec.dart';
 import 'draw_sheet_screen.dart';
@@ -88,7 +89,7 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   void initState() {
     super.initState();
-    _repository = TournamentRepository(tournamentId: widget.tournamentId);
+    _repository = TournamentRepository(tournamentId: widget.tournamentId, isAdmin: widget.isAdmin);
     unawaited(_initializeRepository());
   }
 
@@ -691,6 +692,7 @@ class _HomeScreenState extends State<HomeScreen> {
                           competitors: _competitors,
                           divisions: _divisions,
                           tatamiNames: _tatamiNames,
+                          watchCompetitionCategories: _repository.watchCompetitionCategories,
                           onSave: _saveDivision,
                           onDelete: _deleteDivision,
                         ),
@@ -783,6 +785,18 @@ class _HomeScreenState extends State<HomeScreen> {
         title: const Text('TISKA Tournament Manager'),
         actions: [
           if (widget.isAdmin) ...[
+            IconButton(
+              tooltip: 'Competition Categories',
+              onPressed: _isLoading ? null : () => Navigator.push(
+                context,
+                MaterialPageRoute(builder: (context) => CompetitionCategoriesScreen(
+                  watchCategories: _repository.watchCompetitionCategories,
+                  onSave: _repository.saveCompetitionCategory,
+                  onDelete: _repository.deleteCompetitionCategory,
+                )),
+              ),
+              icon: const Icon(Icons.category_outlined),
+            ),
             IconButton(
               tooltip: 'Restore tournament backup',
               onPressed: _isLoading || _isSavingDrawSheets ? null : _restoreBackup,

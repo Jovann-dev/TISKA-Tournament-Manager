@@ -10,6 +10,7 @@ class TournamentBackup {
   static const List<String> _sections = [
     'competitors', 'divisions', 'tatamiDefinitions',
     'tatamiAssignments', 'tatamiLogs',
+    'competitionCategories',
   ];
 
   final String tournamentId;
@@ -22,7 +23,9 @@ class TournamentBackup {
     DateTime? capturedAt,
   }) : capturedAt = capturedAt ?? DateTime.now().toUtc(),
        _snapshot = _copy({
-         for (final section in _sections) section: snapshot[section] ?? [],
+         for (final section in _sections) section: snapshot[section] ??
+           (section == 'competitionCategories'
+             ? defaultCompetitionCategories().map((item) => item.toMap()).toList() : []),
        });
 
   Map<String, dynamic> get snapshot => _copy(_snapshot);
@@ -70,6 +73,8 @@ class TournamentBackup {
         throw const FormatException('Invalid tournament backup metadata.');
       }
       final snapshot = _map(envelope['snapshot']);
+        snapshot.putIfAbsent('competitionCategories', () =>
+          defaultCompetitionCategories().map((item) => item.toMap()).toList());
       for (final section in _sections) {
         if (snapshot[section] is! List) {
           throw FormatException('Missing backup section: $section.');
@@ -84,7 +89,7 @@ class TournamentBackup {
           if (id is! String || id.isEmpty || !keys.add(id)) {
             throw FormatException('Invalid or duplicate $section identifier.');
           }
-          if (key == 'id') _map(row['data']);
+          if (key == 'id' && section != 'competitionCategories') _map(row['data']);
         }
       }
       final backup = TournamentBackup(
@@ -94,7 +99,7 @@ class TournamentBackup {
       backup.divisions;
       backup.tatamiDefinitions;
       backup.tatamiLogs;
-      validateTournamentSnapshot({}, backup._snapshot);
+      validateTournamentSnapshot({}, backup._snapshot, enforceCategoryAvailability: false);
       return backup;
     } on FormatException {
       rethrow;

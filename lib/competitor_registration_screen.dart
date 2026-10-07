@@ -30,16 +30,7 @@ class CompetitorRegistrationScreen extends StatefulWidget {
 
 class _CompetitorRegistrationScreenState
     extends State<CompetitorRegistrationScreen> {
-  static const List<String> _kiddiesBelts = <String>[
-    'White',
-    'Yellow',
-    'Orange',
-    'Green',
-    'Blue',
-    'Purple',
-    'Red',
-    'Black',
-  ];
+  static const List<String> _kiddiesBelts = kiddiesBeltColors;
 
   final numberController = TextEditingController();
   final nameController = TextEditingController();
@@ -47,9 +38,9 @@ class _CompetitorRegistrationScreenState
   final clubController = TextEditingController();
   final searchController = TextEditingController();
 
-  Gender selectedGender = Gender.male;
+  Gender selectedGender = Gender.notSpecified;
   String selectedBelt = beltOrder.first;
-  String selectedKiddiesBelt = 'White';
+  String selectedKiddiesBelt = 'None';
   String? editingCompetitorId;
   int? selectedBirthYear;
   String? _activeSpreadsheetPath;
@@ -157,12 +148,12 @@ class _CompetitorRegistrationScreenState
         final kiddiesBelt = normalizedBelt.substring('Kiddies - '.length);
         selectedKiddiesBelt = _kiddiesBelts.contains(kiddiesBelt)
             ? kiddiesBelt
-            : 'White';
+          : 'None';
       } else {
         selectedBelt = beltOrder.contains(normalizedBelt)
             ? normalizedBelt
             : 'White';
-        selectedKiddiesBelt = 'White';
+        selectedKiddiesBelt = 'None';
       }
     });
   }
@@ -174,9 +165,9 @@ class _CompetitorRegistrationScreenState
     birthYearController.clear();
     clubController.clear();
     selectedBirthYear = null;
-    selectedGender = Gender.male;
+    selectedGender = Gender.notSpecified;
     selectedBelt = beltOrder.first;
-    selectedKiddiesBelt = 'White';
+    selectedKiddiesBelt = 'None';
   }
 
   int? _calculateAgeFromBirthYear(int? birthYear) {
@@ -531,7 +522,7 @@ class _CompetitorRegistrationScreenState
                                     setState(() {
                                       selectedBelt = value;
                                       if (value != 'Kiddies') {
-                                        selectedKiddiesBelt = 'White';
+                                        selectedKiddiesBelt = 'None';
                                       }
                                     });
                                   }

@@ -16,6 +16,7 @@ class CompetitorSpreadsheetCodec {
     'birth_year',
     'age',
     'club',
+    'kiddies_belt_color',
   ];
 
   static List<int> encode(List<Competitor> competitors) {
@@ -43,6 +44,8 @@ class CompetitorSpreadsheetCodec {
         IntCellValue(birthDate.year),
         IntCellValue(competitor.age),
         TextCellValue(competitor.club),
+        TextCellValue(competitor.belt.toLowerCase().startsWith('kiddies')
+          ? kiddiesBeltColor(competitor.belt) : ''),
       ]);
     }
 
@@ -105,7 +108,13 @@ class CompetitorSpreadsheetCodec {
 
       final number = valueAt(row, 'number', 0);
       final name = valueAt(row, 'name', 1);
-      final belt = valueAt(row, 'belt', 2);
+        final importedBelt = valueAt(row, 'belt', 2);
+        final importedColor = valueAt(row, 'kiddies_belt_color', -1);
+        final isKiddies = importedBelt.toLowerCase() == 'kiddies' ||
+          importedBelt.toLowerCase().startsWith('kiddies - ');
+        final belt = isKiddies
+          ? 'Kiddies - ${importedColor.isEmpty ? kiddiesBeltColor(importedBelt) : normalizeKiddiesBeltColor(importedColor)}'
+          : importedBelt;
       final birthDateRaw = valueAt(row, 'birth_date', -1);
       final birthYearRaw = valueAt(row, 'birth_year', 3);
       final birthYear = _parseBirthYear(birthYearRaw);
@@ -133,7 +142,7 @@ class CompetitorSpreadsheetCodec {
       final id = valueAt(row, 'id', -1);
       final beltRank =
           int.tryParse(valueAt(row, 'belt_rank', -1)) ?? beltToRank(belt);
-      final gender = _parseGender(valueAt(row, 'gender', -1));
+      final gender = parseGender(valueAt(row, 'gender', -1));
       final club = hasHeader
           ? valueAt(row, 'club', -1)
           : valueAt(row, 'club', 4);
@@ -181,13 +190,6 @@ class CompetitorSpreadsheetCodec {
     }
     final year = int.tryParse(trimmed) ?? double.tryParse(trimmed)?.toInt();
     return year ?? DateTime.tryParse(trimmed)?.year;
-  }
-
-  static Gender _parseGender(String value) {
-    return switch (value.trim().toLowerCase()) {
-      'female' || 'f' => Gender.female,
-      _ => Gender.male,
-    };
   }
 
   static String _cellText(Data? data) {

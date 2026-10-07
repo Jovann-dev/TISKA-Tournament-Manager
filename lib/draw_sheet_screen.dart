@@ -226,7 +226,7 @@ class _HeaderCard extends StatelessWidget {
   }
 
   bool _isCompetitionSelected(CompetitionType type) {
-    return division.competitionType == type;
+    return division.categoryId == type.name;
   }
 
   @override
@@ -312,21 +312,31 @@ class _HeaderCard extends StatelessWidget {
                         ),
                       ),
                       const SizedBox(height: 4),
-                      Row(
+                      Wrap(
+                        spacing: 14,
+                        runSpacing: 4,
                         children: [
-                          _square(
-                            division.gender == DivisionGender.maleOnly ||
-                                division.gender == DivisionGender.mixed,
+                          Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              _square(division.gender == DivisionGender.maleOnly || division.gender == DivisionGender.mixed),
+                              const SizedBox(width: 6),
+                              const Text('Male', style: TextStyle(fontSize: 11)),
+                            ],
                           ),
-                          const SizedBox(width: 6),
-                          const Text('Male', style: TextStyle(fontSize: 11)),
-                          const SizedBox(width: 14),
-                          _square(
-                            division.gender == DivisionGender.femaleOnly ||
-                                division.gender == DivisionGender.mixed,
+                          Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              _square(division.gender == DivisionGender.femaleOnly || division.gender == DivisionGender.mixed),
+                              const SizedBox(width: 6),
+                              const Text('Female', style: TextStyle(fontSize: 11)),
+                            ],
                           ),
-                          const SizedBox(width: 6),
-                          const Text('Female', style: TextStyle(fontSize: 11)),
+                          if (division.gender == DivisionGender.notSpecifiedOnly)
+                            Row(mainAxisSize: MainAxisSize.min, children: [
+                              _square(true), const SizedBox(width: 6),
+                              const Text('Not Specified', style: TextStyle(fontSize: 11)),
+                            ]),
                         ],
                       ),
                       const SizedBox(height: 10),
@@ -336,6 +346,8 @@ class _HeaderCard extends StatelessWidget {
                           in <({CompetitionType? type, String label})>[
                             (type: CompetitionType.kata, label: 'Kata'),
                             ...kumiteTypeRows,
+                            if (!CompetitionType.values.any((type) => type.name == division.categoryId))
+                              (type: null, label: division.competitionLabel),
                           ])
                         Padding(
                           padding: const EdgeInsets.only(bottom: 2),
@@ -347,7 +359,7 @@ class _HeaderCard extends StatelessWidget {
                                   style: const TextStyle(fontSize: 11),
                                 ),
                               ),
-                              _square(_isCompetitionSelected(row.type!)),
+                              _square(row.type == null || _isCompetitionSelected(row.type!)),
                             ],
                           ),
                         ),
@@ -939,20 +951,20 @@ class _DrawSheetModel {
             competitors: competitors,
             records: mainRecords,
             byId: byId,
-            competitionType: division.competitionType,
+            competitionType: division.scoringType,
           )
         : competitors.length > 3
         ? _plannedBracketRounds(
             competitors: competitors,
             records: mainRecords,
             byId: byId,
-            competitionType: division.competitionType,
+            competitionType: division.scoringType,
           )
         : _toRounds(
             mainRecords,
             byId,
             competitors: competitors,
-            competitionType: division.competitionType,
+            competitionType: division.scoringType,
             isMain: true,
           );
     final repechageRounds = switch (repechageCompetitors.length) {
@@ -961,13 +973,13 @@ class _DrawSheetModel {
         competitors: repechageCompetitors,
         records: repechageRecords,
         byId: byId,
-        competitionType: division.competitionType,
+        competitionType: division.scoringType,
       ),
       > 3 => _plannedBracketRounds(
         competitors: repechageCompetitors,
         records: repechageRecords,
         byId: byId,
-        competitionType: division.competitionType,
+        competitionType: division.scoringType,
         matchIdPrefix: 'repechage_',
         isRepechage: true,
         includeFinalRound: false,
@@ -976,7 +988,7 @@ class _DrawSheetModel {
         repechageRecords,
         byId,
         competitors: competitors,
-        competitionType: division.competitionType,
+        competitionType: division.scoringType,
         isMain: false,
       ),
     };
@@ -1162,7 +1174,7 @@ class _DrawSheetModel {
 
     final firstMatch = validFirstRecord == null
         ? _plannedMatchData(competitors[0], competitors[1])
-        : _matchDataForRecord(validFirstRecord, byId, division.competitionType);
+        : _matchDataForRecord(validFirstRecord, byId, division.scoringType);
     final secondMatch = validSecondRecord == null
         ? _plannedMatchData(
             competitors[2],
@@ -1171,7 +1183,7 @@ class _DrawSheetModel {
         : _matchDataForRecord(
             validSecondRecord,
             byId,
-            division.competitionType,
+            division.scoringType,
             topCompetitorId: competitors[2].id,
             bottomCompetitorId: firstLoserId,
           );
@@ -1180,7 +1192,7 @@ class _DrawSheetModel {
             firstWinnerId == null ? null : byId[firstWinnerId],
             secondWinnerId == null ? null : byId[secondWinnerId],
           )
-        : _matchDataForRecord(validFinalRecord, byId, division.competitionType);
+        : _matchDataForRecord(validFinalRecord, byId, division.scoringType);
 
     return <_RoundData>[
       _RoundData(

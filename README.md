@@ -37,6 +37,30 @@ entrants, draw order, competition criteria, or competitor registrations. Redo
 clears results and unfinished match state. Import replaces registrations only
 after confirmation and rejects removals that invalidate divisions.
 
+## Competition Categories and Templates
+
+Admins can use the Competition Categories button in the home toolbar to create
+named categories from Flag-Based Scoring or Points-Based Scoring templates.
+The availability checkboxes control the division choices for both admins and
+users. A category referenced by an existing division cannot be deleted; disable
+it instead. Saved divisions retain their category name and scoring template,
+and started divisions must be redone before changing these fields.
+
+Category catalogs synchronize between devices and are included in backups.
+Existing tournaments and old backups default to the original built-in categories.
+Run the updated `supabase/schema.sql` before deploying, and close older clients:
+the migration extends snapshot guards for category/template integrity without
+deleting tournament data. Template IDs are stable; adding future scoring engines
+requires extending the template implementation and its database validation.
+
+## Competitor Spreadsheets
+
+Exports include `kiddies_belt_color` alongside the existing belt text. Imports
+accept that column or the legacy `Kiddies - Purple` style; a plain Kiddies belt
+without a color becomes `Kiddies - None`. Missing gender becomes Not Specified.
+Male/Female values and M/F abbreviations remain supported. Unknown genders are
+not silently treated as male or female.
+
 ## Tournament Backups
 
 Save Data captures one detached tournament snapshot for draw-sheet images,

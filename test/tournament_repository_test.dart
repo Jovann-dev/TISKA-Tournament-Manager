@@ -138,7 +138,7 @@ class FakeBackend extends TournamentBackend {
       return null;
     }
     if (expectedRevision != remote['revision']) return null;
-    validateTournamentSnapshot(remote, snapshot);
+    validateTournamentSnapshot(remote, snapshot, enforceCategoryAvailability: false);
     remote = clone({...snapshot, 'revision': expectedRevision + 1});
     if (loseNextAcknowledgement) {
       loseNextAcknowledgement = false;
@@ -215,12 +215,15 @@ Map<String, dynamic> initialSnapshot({bool sameTatami = false}) => {
 
 Future<TournamentRepository> repository(
   FakeBackend backend,
-  MemoryStore store,
+  MemoryStore store, {
+  bool isAdmin = false,
+}
 ) async {
   final result = TournamentRepository(
     backend: backend,
     localStore: store,
     tournamentId: 'test',
+    isAdmin: isAdmin,
   );
   await result.initialize(defaultTatamis: []);
   addTearDown(result.dispose);
@@ -238,6 +241,76 @@ Map<String, dynamic> snapshot(Map<String, int> scores) => {
 };
 
 void main() {
+  test('non-admin restore cannot change the category catalog', () async {
+    final backend = FakeBackend(initialSnapshot());
+    final user = await repository(backend, MemoryStore());
+    final snapshot = user.captureBackup().snapshot;
+    (snapshot['competitionCategories'] as List).add(const CompetitionCategory(
+      id: 'custom', name: 'Open Kata', template: CompetitionTemplate.flagVoting,
+    ).toMap());
+    await expectLater(user.restoreBackup(TournamentBackup(
+      tournamentId: 'test', snapshot: snapshot,
+    )), throwsStateError);
+    expect(await user.watchCompetitionCategories().first, hasLength(CompetitionType.values.length));
+  });
+
+  test('unchanged legacy started divisions do not acquire category metadata', () async {
+    final backend = FakeBackend(initialSnapshot());
+    final result = await repository(backend, MemoryStore());
+    await result.startDivisionOnTatami('Tatami 1', 'one');
+    final current = (await result.watchDivisions().first).first;
+    await result.saveDivision(current.copyWith(
+      competitionCategoryId: CompetitionType.kata.name,
+      competitionCategoryName: CompetitionType.kata.label,
+      competitionTemplate: CompetitionTemplate.flagVoting,
+    ));
+    final saved = (await result.watchDivisions().first).first;
+    expect(saved.competitionCategoryId, isNull);
+    expect(saved.competitionTemplate, isNull);
+  });
+
+  test('admin categories persist and disabled categories retain existing divisions', () async {
+    final backend = FakeBackend(initialSnapshot());
+    final admin = await repository(backend, MemoryStore(), isAdmin: true);
+    const custom = CompetitionCategory(
+      id: 'custom-points', name: 'Open Kumite', template: CompetitionTemplate.points,
+    );
+    await admin.saveCompetitionCategory(custom);
+    final customDivision = division('custom', 'Tatami 1', ['c0', 'c1']).copyWith(
+      competitionType: custom.legacyType,
+      competitionCategoryId: custom.id, competitionCategoryName: custom.name,
+      competitionTemplate: custom.template,
+    );
+    await admin.saveDivision(customDivision);
+    await admin.saveCompetitionCategory(custom.copyWith(enabled: false));
+    await expectLater(admin.saveDivision(customDivision.copyWith(id: 'another')), throwsStateError);
+    await expectLater(admin.deleteCompetitionCategory(custom.id), throwsStateError);
+    final backup = TournamentBackup.decode(admin.captureBackup().encode());
+    expect(backup.divisions.singleWhere((item) => item.id == 'custom').competitionLabel, custom.name);
+    await admin.synchronize();
+    final user = await repository(backend, MemoryStore());
+    expect((await user.watchCompetitionCategories().first).singleWhere((item) => item.id == custom.id).enabled, isFalse);
+    await expectLater(user.saveCompetitionCategory(custom), throwsStateError);
+    await expectLater(user.deleteCompetitionCategory(custom.id), throwsStateError);
+    await admin.deleteCompetitionCategory(CompetitionType.jiyuIpponKumite.name);
+    expect((await admin.watchCompetitionCategories().first).any((item) => item.id == CompetitionType.jiyuIpponKumite.name), isFalse);
+  });
+
+  test('custom category divisions preserve names and scoring templates', () {
+    final custom = division('custom', 'Tatami 1', ['c0', 'c1']).copyWith(
+      competitionCategoryId: 'custom-points',
+      competitionCategoryName: 'Open Kumite',
+      competitionTemplate: CompetitionTemplate.points,
+    );
+    final restored = Division.fromMap(custom.id, Map<String, dynamic>.from(custom.toMap()));
+    expect(restored.categoryId, 'custom-points');
+    expect(restored.title, startsWith('Open Kumite:'));
+    expect(restored.scoringTemplate, CompetitionTemplate.points);
+    expect(restored.executionMode, CompetitionExecutionMode.manualWinner);
+    expect(division('old', 'Tatami 1', ['c0', 'c1']).scoringTemplate, CompetitionTemplate.flagVoting);
+    expect(defaultCompetitionCategories(), hasLength(CompetitionType.values.length));
+  });
+
   test('Supabase live broadcast reaches a separate client', () async {
     final publisherClient = SupabaseClient(SupabaseConfig.url, SupabaseConfig.publishableKey);
     final viewerClient = SupabaseClient(SupabaseConfig.url, SupabaseConfig.publishableKey);

@@ -264,9 +264,9 @@ class _CompetitionExecutionScreenState
     ];
   }
 
-  bool get _isJiyuKumite =>
-      (_executionSession?.division ?? widget.division).competitionType ==
-      CompetitionType.jiyuKumite;
+  Division get _division => _executionSession?.division ?? widget.division;
+
+  bool get _isJiyuKumite => _division.scoringTemplate == CompetitionTemplate.points;
 
   void _publishLiveState() {
     final current = _currentMatch;
@@ -291,9 +291,9 @@ class _CompetitionExecutionScreenState
       LiveMatchState(
         tatamiName: widget.tatamiName,
         divisionId: widget.division.id,
-        divisionTitle: widget.division.title,
-        competitionType: widget.division.competitionType,
-        executionMode: widget.division.competitionType.executionMode,
+        divisionTitle: _division.title,
+        competitionType: _division.scoringType,
+        executionMode: _division.executionMode,
         roundLabel: current?.match.roundLabel,
         competitorA: current?.competitorA,
         competitorB: current?.competitorB,
@@ -1171,7 +1171,7 @@ class _CompetitionExecutionScreenState
     int? competitorAFlags;
     int? competitorBFlags;
 
-    if (widget.division.competitionType.executionMode ==
+    if (_division.executionMode ==
         CompetitionExecutionMode.flagVoting) {
       competitorAFlags = _competitorAFlags;
       competitorBFlags = _judgesCount - _competitorAFlags;
@@ -1577,7 +1577,7 @@ class _CompetitionExecutionScreenState
                 ),
                 const SizedBox(height: 8),
                 Text(
-                  '${widget.division.competitionType.label} | ${_planCompetitors.length} competitors${widget.competitors.length > _planCompetitors.length ? ' (first ${_planCompetitors.length} used)' : ''}',
+                  '${_division.competitionLabel} | ${_planCompetitors.length} competitors${widget.competitors.length > _planCompetitors.length ? ' (first ${_planCompetitors.length} used)' : ''}',
                 ),
                 const SizedBox(height: 16),
                 Card(
@@ -1587,10 +1587,7 @@ class _CompetitionExecutionScreenState
                       children: [
                         Expanded(
                           child: Text(
-                            widget.division.competitionType.executionMode ==
-                                    CompetitionExecutionMode.flagVoting
-                                ? 'Flag voting mode'
-                                : 'Manual winner mode',
+                            _division.scoringTemplate.label,
                           ),
                         ),
                         SizedBox(
@@ -1699,10 +1696,7 @@ class _CompetitionExecutionScreenState
                               onEndMatch: _endCurrentJiyuMatch,
                               onOvertime: _startOvertimePeriod,
                             )
-                          else if (widget
-                                  .division
-                                  .competitionType
-                                  .executionMode ==
+                            else if (_division.executionMode ==
                               CompetitionExecutionMode.flagVoting)
                             _FlagVotingEditor(
                               judgesCount: _judgesCount,

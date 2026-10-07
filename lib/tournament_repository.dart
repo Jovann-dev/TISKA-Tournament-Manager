@@ -75,6 +75,10 @@ class DivisionExecutionSession {
 class TournamentRepository {
   final TournamentLocalStore _localStore;
   final String tournamentId;
+  final bool isAdmin;
+  List<CompetitionCategory> _competitionCategories = defaultCompetitionCategories();
+  final StreamController<List<CompetitionCategory>> _categoriesController =
+      StreamController<List<CompetitionCategory>>.broadcast();
   final List<Competitor> _competitors = <Competitor>[];
   final List<Division> _divisions = <Division>[];
   final Map<String, TatamiAssignment> _tatamiAssignments =
@@ -125,6 +129,7 @@ class TournamentRepository {
     TournamentLocalStore? localStore,
     TournamentBackend? backend,
     this.tournamentId = '',
+    this.isAdmin = false,
   }) : _localStore = localStore ?? TournamentLocalStore(),
        _backend = backend ?? TournamentBackend();
 
@@ -164,6 +169,45 @@ class TournamentRepository {
   Stream<TournamentSyncStatus> watchSyncStatus() =>
       _watchWithInitial(_syncStatus, _syncStatusController.stream);
 
+  Stream<List<CompetitionCategory>> watchCompetitionCategories() =>
+      _watchWithInitial(List<CompetitionCategory>.unmodifiable(_competitionCategories),
+          _categoriesController.stream);
+
+  Future<void> saveCompetitionCategory(CompetitionCategory category) async {
+    if (!isAdmin) throw StateError('Only admins can manage competition categories.');
+    final checked = CompetitionCategory.fromMap(Map<String, dynamic>.from(category.toMap()));
+    final index = _competitionCategories.indexWhere((item) => item.id == checked.id);
+    if (_competitionCategories.any((item) => item.id != checked.id &&
+        item.name.toLowerCase() == checked.name.toLowerCase())) {
+      throw StateError('A competition category with this name already exists.');
+    }
+    if (index != -1 && (_competitionCategories[index].name != checked.name ||
+        _competitionCategories[index].template != checked.template)) {
+      throw StateError('Existing category names and templates cannot be changed.');
+    }
+    if (index == -1) {
+      _competitionCategories.add(checked);
+    } else {
+      _competitionCategories[index] = checked;
+    }
+    _emitCategories();
+    await _persist();
+  }
+
+  Future<void> deleteCompetitionCategory(String categoryId) async {
+    if (!isAdmin) throw StateError('Only admins can manage competition categories.');
+    if (_divisions.any((division) => division.categoryId == categoryId)) {
+      throw StateError('This category is used by a division. Disable it instead.');
+    }
+    _competitionCategories.removeWhere((item) => item.id == categoryId);
+    _emitCategories();
+    await _persist();
+  }
+
+  void _emitCategories() {
+    _categoriesController.add(List<CompetitionCategory>.unmodifiable(_competitionCategories));
+  }
+
   TournamentBackup captureBackup() => TournamentBackup(
     tournamentId: tournamentId,
     snapshot: _buildSnapshot(),
@@ -177,6 +221,16 @@ class TournamentRepository {
     await synchronize();
     if (_syncStatus.state == TournamentSyncState.conflict) {
       throw StateError('Resolve synchronization conflicts before restoring.');
+    }
+    if (!isAdmin) {
+      final restoredCategories = [for (final row in checked.snapshot['competitionCategories'] as List)
+        CompetitionCategory.fromMap(Map<String, dynamic>.from(row as Map))];
+      if (restoredCategories.length != _competitionCategories.length ||
+          _competitionCategories.any((current) => !restoredCategories.any((item) =>
+              item.id == current.id && item.name == current.name &&
+              item.template == current.template && item.enabled == current.enabled))) {
+        throw StateError('Only admins can restore changes to competition categories.');
+      }
     }
     final replacements = {for (final item in checked.divisions) item.id: item};
     final competitors = {for (final item in checked.competitors) item.id: item};
@@ -194,7 +248,7 @@ class TournamentRepository {
       }
     }
     final snapshot = checked.snapshot;
-    validateTournamentSnapshot(_buildSnapshot(), snapshot);
+    validateTournamentSnapshot(_buildSnapshot(), snapshot, enforceCategoryAvailability: false);
     _applySnapshot(snapshot);
     _emitAll();
     await _persist();
@@ -840,6 +894,12 @@ class TournamentRepository {
         );
       }
       division = division.copyWith(
+        competitionCategoryId: divisionHasResults(previousDivision)
+          ? previousDivision.competitionCategoryId : division.competitionCategoryId,
+        competitionCategoryName: divisionHasResults(previousDivision)
+          ? previousDivision.competitionCategoryName : division.competitionCategoryName,
+        competitionTemplate: divisionHasResults(previousDivision)
+          ? previousDivision.competitionTemplate : division.competitionTemplate,
         progress: previousDivision.progress,
         startedAt: previousDivision.startedAt,
         completedAt: previousDivision.completedAt,
@@ -995,7 +1055,7 @@ class TournamentRepository {
           remote: remote,
         );
         try {
-          validateTournamentSnapshot(remote, candidate);
+          validateTournamentSnapshot(remote, candidate, enforceCategoryAvailability: false);
         } on StateError catch (error) {
           throw TournamentSyncConflict(error.message);
         }
@@ -1056,6 +1116,7 @@ class TournamentRepository {
   }
 
   void _emitAll() {
+    _emitCategories();
     _emitCompetitors();
     _emitDivisions();
     _emitTatamiNames();
@@ -1105,6 +1166,10 @@ class TournamentRepository {
   }
 
   void _applySnapshot(Map<String, dynamic> snapshot) {
+    _competitionCategories = snapshot.containsKey('competitionCategories')
+      ? [for (final row in snapshot['competitionCategories'] as List)
+        CompetitionCategory.fromMap(Map<String, dynamic>.from(row as Map))]
+      : defaultCompetitionCategories();
     List<Map<String, dynamic>> asMapList(Object? value) {
       final source = value as List<dynamic>? ?? const <dynamic>[];
       return source
@@ -1239,6 +1304,7 @@ class TournamentRepository {
     final timestamp = DateTime.now().toUtc().toIso8601String();
     return <String, dynamic>{
       'updated_at': timestamp,
+      'competitionCategories': _competitionCategories.map((item) => item.toMap()).toList(),
       'competitors': _competitors
           .map(
             (competitor) => <String, Object?>{
@@ -1296,6 +1362,7 @@ class TournamentRepository {
     await _liveChannel?.dispose();
     await _localWriteQueue;
     await Future.wait([
+      _categoriesController.close(),
       _competitorsController.close(),
       _divisionsController.close(),
       _tatamiController.close(),

@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import 'tournament_models.dart';
@@ -6,6 +8,7 @@ class DivisionRegistrationScreen extends StatefulWidget {
   final List<Competitor> competitors;
   final List<Division> divisions;
   final List<String> tatamiNames;
+  final Stream<List<CompetitionCategory>> Function()? watchCompetitionCategories;
   final Future<void> Function(Division division) onSave;
   final Future<void> Function(String divisionId) onDelete;
 
@@ -14,6 +17,7 @@ class DivisionRegistrationScreen extends StatefulWidget {
     required this.competitors,
     required this.divisions,
     required this.tatamiNames,
+    this.watchCompetitionCategories,
     required this.onSave,
     required this.onDelete,
   });
@@ -25,7 +29,16 @@ class DivisionRegistrationScreen extends StatefulWidget {
 
 class _DivisionRegistrationScreenState
     extends State<DivisionRegistrationScreen> {
-  CompetitionType selectedCompetitionType = CompetitionType.kata;
+  List<CompetitionCategory> _categories = defaultCompetitionCategories();
+  StreamSubscription<List<CompetitionCategory>>? _categoriesSubscription;
+  String? selectedCategoryId = CompetitionType.kata.name;
+
+  CompetitionCategory? get selectedCategory =>
+      _categories.where((item) => item.id == selectedCategoryId).firstOrNull;
+
+  List<CompetitionCategory> get availableCategories => _categories.where(
+    (item) => item.enabled || item.id == editingDivision?.categoryId,
+  ).toList();
   final competitorNumberController = TextEditingController();
   String? selectedTatamiName;
   String? editingDivisionId;
@@ -83,6 +96,15 @@ class _DivisionRegistrationScreenState
     selectedTatamiName = widget.tatamiNames.isEmpty
         ? null
         : widget.tatamiNames.first;
+    _categoriesSubscription = widget.watchCompetitionCategories?.call().listen((categories) {
+      if (!mounted) return;
+      setState(() {
+        _categories = categories;
+        if (!availableCategories.any((item) => item.id == selectedCategoryId)) {
+          selectedCategoryId = availableCategories.firstOrNull?.id;
+        }
+      });
+    });
   }
 
   Division? get editingDivision {
@@ -128,6 +150,7 @@ class _DivisionRegistrationScreenState
     var maxBeltRank = selectedCompetitors.first.beltRank;
     var hasMale = false;
     var hasFemale = false;
+    var hasNotSpecified = false;
 
     for (final competitor in selectedCompetitors) {
       if (competitor.age < minAge) {
@@ -144,16 +167,20 @@ class _DivisionRegistrationScreenState
       }
       if (competitor.gender == Gender.male) {
         hasMale = true;
-      } else {
+      } else if (competitor.gender == Gender.female) {
         hasFemale = true;
+      } else {
+        hasNotSpecified = true;
       }
     }
 
-    final gender = hasMale && hasFemale
+    final gender = (hasMale && hasFemale) || (hasNotSpecified && (hasMale || hasFemale))
         ? DivisionGender.mixed
         : hasMale
         ? DivisionGender.maleOnly
-        : DivisionGender.femaleOnly;
+      : hasFemale
+      ? DivisionGender.femaleOnly
+      : DivisionGender.notSpecifiedOnly;
 
     return _DivisionCriteria(
       minBeltRank: minBeltRank,
@@ -166,13 +193,17 @@ class _DivisionRegistrationScreenState
 
   Division? get previewDivision {
     final criteria = derivedCriteria;
-    if (criteria == null || selectedTatamiName == null) {
+    final category = selectedCategory;
+    if (criteria == null || selectedTatamiName == null || category == null) {
       return null;
     }
 
     return Division(
       id: editingDivisionId ?? '',
-      competitionType: selectedCompetitionType,
+      competitionType: category.legacyType,
+      competitionCategoryId: category.id,
+      competitionCategoryName: category.name,
+      competitionTemplate: category.template,
       minBeltRank: criteria.minBeltRank,
       maxBeltRank: criteria.maxBeltRank,
       minAge: criteria.minAge,
@@ -199,6 +230,11 @@ class _DivisionRegistrationScreenState
   }
 
   Future<void> saveDivision() async {
+    final category = selectedCategory;
+    if (category == null || (!category.enabled && editingDivision?.categoryId != category.id)) {
+      _showMessage('Select an available competition category.');
+      return;
+    }
     if (widget.tatamiNames.isEmpty || selectedTatamiName == null) {
       _showMessage('Configure at least one tatami before creating divisions.');
       return;
@@ -230,7 +266,10 @@ class _DivisionRegistrationScreenState
           id:
               editingDivisionId ??
               DateTime.now().microsecondsSinceEpoch.toString(),
-          competitionType: selectedCompetitionType,
+          competitionType: category.legacyType,
+          competitionCategoryId: category.id,
+          competitionCategoryName: category.name,
+          competitionTemplate: category.template,
           minBeltRank: criteria.minBeltRank,
           maxBeltRank: criteria.maxBeltRank,
           minAge: criteria.minAge,
@@ -277,7 +316,7 @@ class _DivisionRegistrationScreenState
   void editDivision(Division division) {
     setState(() {
       editingDivisionId = division.id;
-      selectedCompetitionType = division.competitionType;
+      selectedCategoryId = division.categoryId;
       selectedTatamiName = division.assignedTatamiName;
       selectedCompetitorIds
         ..clear()
@@ -292,7 +331,7 @@ class _DivisionRegistrationScreenState
 
   void _resetForm() {
     editingDivisionId = null;
-    selectedCompetitionType = CompetitionType.kata;
+    selectedCategoryId = _categories.where((item) => item.enabled).firstOrNull?.id;
     selectedTatamiName = widget.tatamiNames.isEmpty
         ? null
         : widget.tatamiNames.first;
@@ -353,6 +392,7 @@ class _DivisionRegistrationScreenState
 
   @override
   void dispose() {
+    _categoriesSubscription?.cancel();
     competitorNumberController.dispose();
     super.dispose();
   }
@@ -433,18 +473,20 @@ class _DivisionRegistrationScreenState
                                       : 'Preview: ${preview.title}',
                                 ),
                                 const SizedBox(height: 16),
-                                DropdownButtonFormField<CompetitionType>(
-                                  initialValue: selectedCompetitionType,
+                                DropdownButtonFormField<String>(
+                                  key: ValueKey('competition-category-$selectedCategoryId-${availableCategories.map((item) => item.id).join(',')}'),
+                                  initialValue: selectedCategoryId,
+                                  isExpanded: true,
                                   decoration: const InputDecoration(
-                                    labelText: 'Competition Type',
+                                    labelText: 'Competition Category',
                                     border: OutlineInputBorder(),
                                   ),
-                                  items: CompetitionType.values
+                                  items: availableCategories
                                       .map(
                                         (type) =>
-                                            DropdownMenuItem<CompetitionType>(
-                                              value: type,
-                                              child: Text(type.label),
+                                            DropdownMenuItem<String>(
+                                              value: type.id,
+                                              child: Text(type.name, maxLines: 1, overflow: TextOverflow.ellipsis),
                                             ),
                                       )
                                       .toList(),
@@ -453,7 +495,7 @@ class _DivisionRegistrationScreenState
                                       : (value) {
                                           if (value != null) {
                                             setState(() {
-                                              selectedCompetitionType = value;
+                                              selectedCategoryId = value;
                                             });
                                           }
                                         },
@@ -840,6 +882,7 @@ class _DivisionCriteria {
       DivisionGender.mixed => true,
       DivisionGender.maleOnly => competitor.gender == Gender.male,
       DivisionGender.femaleOnly => competitor.gender == Gender.female,
+      DivisionGender.notSpecifiedOnly => competitor.gender == Gender.notSpecified,
     };
     return beltMatches && ageMatches && genderMatches;
   }

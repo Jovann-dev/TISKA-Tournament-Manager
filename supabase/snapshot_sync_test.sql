@@ -11,8 +11,8 @@ declare
       {"id":"c3","data":{"number":"3","name":"Entrant 3"}}
     ],
     "divisions": [
-      {"id":"one","data":{"competitorIds":["c0","c1"],"progress":"queued","assignedTatamiName":"Tatami 1","matchRecords":[],"placements":[]}},
-      {"id":"two","data":{"competitorIds":["c2","c3"],"progress":"queued","assignedTatamiName":"Tatami 2","matchRecords":[],"placements":[]}}
+      {"id":"one","data":{"competitionType":"kata","competitorIds":["c0","c1"],"progress":"queued","assignedTatamiName":"Tatami 1","matchRecords":[],"placements":[]}},
+      {"id":"two","data":{"competitionType":"kata","competitorIds":["c2","c3"],"progress":"queued","assignedTatamiName":"Tatami 2","matchRecords":[],"placements":[]}}
     ],
     "tatamiDefinitions":[{"name":"Tatami 1","judgesCount":5},{"name":"Tatami 2","judgesCount":5}],
     "tatamiLogs":[]
@@ -79,6 +79,41 @@ begin
   saved := public.save_tournament_snapshot(tournament_id, 3,
     jsonb_set(saved, '{divisions,0,data,competitorIds}', '["c1","c0"]'));
   if (saved->>'revision')::bigint <> 4 then raise exception 'Redo did not unlock bracket'; end if;
+
+  attempted := jsonb_set(saved, '{competitionCategories}',
+    '[{"id":"kata","name":"Kata","template":"flagVoting","enabled":true},{"id":"custom","name":"Open Kumite","template":"points","enabled":true}]');
+  attempted := jsonb_set(attempted, '{divisions,0,data,competitionCategoryId}', '"custom"');
+  attempted := jsonb_set(attempted, '{divisions,0,data,competitionCategoryName}', '"Open Kumite"');
+  attempted := jsonb_set(attempted, '{divisions,0,data,competitionTemplate}', '"points"');
+  saved := public.save_tournament_snapshot(tournament_id, 4, attempted);
+  if (saved->>'revision')::bigint <> 5 then raise exception 'Custom category save failed'; end if;
+
+  rejected := false;
+  begin
+    perform public.save_tournament_snapshot(tournament_id, 5,
+      jsonb_set(saved, '{divisions,0,data,competitionTemplate}', '"flagVoting"'));
+  exception when raise_exception then rejected := true;
+  end;
+  if not rejected then raise exception 'Mismatched category template was accepted'; end if;
+
+  rejected := false;
+  begin
+    perform public.save_tournament_snapshot(tournament_id, 5,
+      jsonb_set(saved, '{competitionCategories}', '[]'));
+  exception when raise_exception then rejected := true;
+  end;
+  if not rejected then raise exception 'Deletion of a used category was accepted'; end if;
+
+  saved := public.save_tournament_snapshot(tournament_id, 5,
+    jsonb_set(saved, '{competitionCategories,1,enabled}', 'false'));
+  if (saved->>'revision')::bigint <> 6 then raise exception 'Category disable lost existing division'; end if;
+
+  rejected := false;
+  begin
+    perform public.save_tournament_snapshot(tournament_id, 6, saved - 'competitionCategories');
+  exception when raise_exception then rejected := true;
+  end;
+  if not rejected then raise exception 'An older client dropped the category catalog'; end if;
 end;
 $$;
 

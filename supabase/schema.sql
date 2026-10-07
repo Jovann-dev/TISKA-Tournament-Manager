@@ -45,9 +45,51 @@ declare
   previous_data jsonb;
   current_data jsonb;
   explicitly_reset boolean;
+  category_row jsonb;
+  category_id text;
+  category_template text;
 begin
   if tg_op = 'UPDATE' and new.revision <> old.revision + 1 then
     raise exception 'Revision-checked tournament writes are required';
+  end if;
+
+  if tg_op = 'UPDATE' and old.snapshot ? 'competitionCategories'
+    and not (new.snapshot ? 'competitionCategories') then
+    raise exception 'Competition category catalog is required; update the client';
+  end if;
+
+  if new.snapshot ? 'competitionCategories' then
+    if exists (
+      select 1 from jsonb_array_elements(new.snapshot->'competitionCategories') as item
+      group by item->>'id' having count(*) > 1
+    ) or exists (
+      select 1 from jsonb_array_elements(new.snapshot->'competitionCategories') as item
+      group by lower(trim(item->>'name')) having count(*) > 1
+    ) then
+      raise exception 'Competition category IDs and names must be unique';
+    end if;
+    for category_row in select value from jsonb_array_elements(new.snapshot->'competitionCategories')
+    loop
+      if coalesce(trim(category_row->>'id'), '') = ''
+        or coalesce(trim(category_row->>'name'), '') = ''
+        or coalesce(category_row->>'template', '') not in ('flagVoting', 'points')
+        or jsonb_typeof(category_row->'enabled') is distinct from 'boolean' then
+        raise exception 'Invalid competition category';
+      end if;
+    end loop;
+    if tg_op = 'UPDATE' and old.snapshot ? 'competitionCategories' then
+      for category_row in select value from jsonb_array_elements(old.snapshot->'competitionCategories')
+      loop
+        if exists (
+          select 1 from jsonb_array_elements(new.snapshot->'competitionCategories') as item
+          where item->>'id' = category_row->>'id'
+            and (item->>'name' is distinct from category_row->>'name'
+              or item->>'template' is distinct from category_row->>'template')
+        ) then
+          raise exception 'Existing competition category names and templates cannot be changed';
+        end if;
+      end loop;
+    end if;
   end if;
 
   if exists (
@@ -76,6 +118,22 @@ begin
     select value from jsonb_array_elements(coalesce(new.snapshot->'divisions', '[]'))
   loop
     current_data := division_row->'data';
+    category_id := coalesce(current_data->>'competitionCategoryId', current_data->>'competitionType');
+    if new.snapshot ? 'competitionCategories' then
+      select item into category_row
+        from jsonb_array_elements(new.snapshot->'competitionCategories') as item
+        where item->>'id' = category_id;
+      if category_row is null then
+        raise exception 'Division competition category does not exist';
+      end if;
+      category_template := coalesce(current_data->>'competitionTemplate',
+        case when current_data->>'competitionType' = 'jiyuKumite' then 'points' else 'flagVoting' end);
+      if category_template is distinct from category_row->>'template'
+        or (current_data ? 'competitionCategoryName'
+          and current_data->>'competitionCategoryName' is distinct from category_row->>'name') then
+        raise exception 'Division competition category or template does not match the catalog';
+      end if;
+    end if;
     if jsonb_array_length(coalesce(current_data->'competitorIds', '[]')) not between 2 and 16
       or (select count(distinct value) from jsonb_array_elements(current_data->'competitorIds'))
         <> jsonb_array_length(current_data->'competitorIds') then
@@ -136,10 +194,10 @@ begin
         raise exception 'Redo must clear all results and unfinished match state';
       end if;
       if (select jsonb_object_agg(key, value) from jsonb_each(previous_data)
-          where key in ('competitorIds','competitionType','minAge','maxAge','minBeltRank','maxBeltRank','gender'))
+          where key in ('competitorIds','competitionType','competitionCategoryId','competitionCategoryName','competitionTemplate','minAge','maxAge','minBeltRank','maxBeltRank','gender'))
         is distinct from
         (select jsonb_object_agg(key, value) from jsonb_each(current_data)
-          where key in ('competitorIds','competitionType','minAge','maxAge','minBeltRank','maxBeltRank','gender')) then
+          where key in ('competitorIds','competitionType','competitionCategoryId','competitionCategoryName','competitionTemplate','minAge','maxAge','minBeltRank','maxBeltRank','gender')) then
         raise exception 'Redo the division before changing its bracket';
       end if;
       for participant in select value from jsonb_array_elements(previous_data->'competitorIds')

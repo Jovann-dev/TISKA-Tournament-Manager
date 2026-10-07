@@ -20,6 +20,7 @@ import 'package:tiska_tournament_manager/division_registration_screen.dart';
 import 'package:tiska_tournament_manager/main.dart';
 import 'package:tiska_tournament_manager/draw_sheet_screen.dart';
 import 'package:tiska_tournament_manager/home_screen.dart';
+import 'package:tiska_tournament_manager/competition_categories_screen.dart';
 import 'package:tiska_tournament_manager/live_match_state.dart';
 import 'package:tiska_tournament_manager/tatami_display_screen.dart';
 import 'package:tiska_tournament_manager/tournament_backend.dart';
@@ -132,6 +133,137 @@ Widget _competitionExecution(
 }
 
 void main() {
+  testWidgets('category management fits mobile width with long names', (tester) async {
+    tester.view.physicalSize = const Size(320, 800);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final category = CompetitionCategory(
+      id: 'long-name', name: List.filled(80, 'X').join(), template: CompetitionTemplate.points,
+    );
+    await tester.pumpWidget(MaterialApp(home: CompetitionCategoriesScreen(
+      watchCategories: () => Stream.value([category]),
+      onSave: (_) async {}, onDelete: (_) async {},
+    )));
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(find.byKey(const ValueKey('category-enabled-long-name')));
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('custom categories use their saved scoring template', (tester) async {
+    final competitors = _competitors(2);
+    final custom = _executionDivision(competitors).copyWith(
+      competitionCategoryId: 'custom', competitionCategoryName: 'Open Kumite',
+      competitionTemplate: CompetitionTemplate.points,
+    );
+    await tester.pumpWidget(_competitionExecution(competitors, (_, _) {}, division: custom));
+    await tester.pumpAndSettle();
+    expect(find.text('Timer: 01:00'), findsOneWidget);
+    expect(find.byKey(const ValueKey('Aka flags')), findsNothing);
+    await tester.pumpWidget(const SizedBox());
+    await tester.pumpWidget(_competitionExecution(competitors, (_, _) {},
+      division: custom.copyWith(competitionTemplate: CompetitionTemplate.flagVoting)));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('Aka flags')), findsOneWidget);
+    expect(find.text('Timer: 01:00'), findsNothing);
+  });
+
+  testWidgets('division categories follow live availability changes', (tester) async {
+    final updates = StreamController<List<CompetitionCategory>>.broadcast();
+    addTearDown(updates.close);
+    await tester.pumpWidget(MaterialApp(home: DivisionRegistrationScreen(
+      competitors: [], divisions: [], tatamiNames: ['Tatami 1'],
+      watchCompetitionCategories: () => updates.stream,
+      onSave: (_) async {}, onDelete: (_) async {},
+    )));
+    const custom = CompetitionCategory(id: 'custom', name: 'Open Kata', template: CompetitionTemplate.flagVoting);
+    updates.add([custom]);
+    await tester.pumpAndSettle();
+    final finder = find.byWidgetPredicate((widget) => widget is DropdownButtonFormField<String> &&
+        widget.decoration.labelText == 'Competition Category');
+    final dropdown = find.descendant(of: finder, matching: find.byType(DropdownButton<String>));
+    final selector = tester.widget<DropdownButton<String>>(dropdown);
+    expect(selector.items!.map((item) => item.value), ['custom']);
+    updates.add([custom.copyWith(enabled: false)]);
+    await tester.pumpAndSettle();
+    expect(tester.widget<DropdownButton<String>>(dropdown).items, isEmpty);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('custom points draw sheet preserves category and event symbols', (tester) async {
+    final competitors = _competitors(2);
+    final division = _divisionFor(competitors).copyWith(
+      competitionCategoryId: 'custom', competitionCategoryName: 'Open Kumite',
+      competitionTemplate: CompetitionTemplate.points,
+      matchRecords: [DivisionMatchRecord(
+        matchId: 'match_1', roundLabel: 'Final',
+        competitorAId: competitors[0].id, competitorBId: competitors[1].id,
+        winnerId: competitors[0].id, loserId: competitors[1].id,
+        events: [DivisionMatchEventRecord(competitorId: competitors[0].id,
+          kind: KumiteEventKind.ippon, timestamp: 1, pointsAwarded: 2)],
+      )],
+    );
+    await tester.pumpWidget(MaterialApp(home: Scaffold(body: DrawSheetContent(
+      division: division, competitors: competitors,
+    ))));
+    expect(find.text('Open Kumite'), findsOneWidget);
+    expect(find.text('●'), findsOneWidget);
+  });
+
+  testWidgets('admin creates a category and toggles its availability', (tester) async {
+    final updates = StreamController<List<CompetitionCategory>>.broadcast();
+    addTearDown(updates.close);
+    final categories = <CompetitionCategory>[];
+    await tester.pumpWidget(MaterialApp(home: CompetitionCategoriesScreen(
+      watchCategories: () => updates.stream,
+      onSave: (category) async {
+        categories.removeWhere((item) => item.id == category.id);
+        categories.add(category);
+        updates.add(List.of(categories));
+      },
+      onDelete: (_) async {},
+    )));
+    await tester.enterText(find.byKey(const ValueKey('competition-category-name')), 'Open Kata');
+    await tester.tap(find.byKey(const ValueKey('add-competition-category')));
+    await tester.pumpAndSettle();
+    expect(categories.single.name, 'Open Kata');
+    expect(categories.single.template, CompetitionTemplate.flagVoting);
+    final availability = find.byKey(ValueKey('category-enabled-${categories.single.id}'));
+    await tester.ensureVisible(availability);
+    await tester.tap(availability);
+    await tester.pumpAndSettle();
+    expect(categories.single.enabled, isFalse);
+  });
+
+  test('spreadsheet import defaults missing Kiddies color and gender', () {
+    final imported = CompetitorSpreadsheetCodec.decodeRows([
+      ['number', 'name', 'belt', 'age'],
+      ['001', 'Unspecified entrant', 'Kiddies', '10'],
+    ]);
+    expect(imported.single.belt, 'Kiddies - None');
+    expect(imported.single.gender, Gender.notSpecified);
+    expect(imported.single.beltRank, beltToRank('Kiddies'));
+    final restored = CompetitorSpreadsheetCodec.decode(
+      Uint8List.fromList(CompetitorSpreadsheetCodec.encode(imported)),
+    );
+    expect(restored.single.belt, 'Kiddies - None');
+    expect(restored.single.gender, Gender.notSpecified);
+  });
+
+  test('spreadsheet Kiddies color column round trips and supports legacy belts', () {
+    final imported = CompetitorSpreadsheetCodec.decodeRows([
+      ['number', 'name', 'belt', 'age', 'kiddies_belt_color', 'gender'],
+      ['001', 'Color entrant', 'Kiddies', '10', 'Purple', 'Female'],
+      ['002', 'Legacy entrant', 'Kiddies - Black', '10', '', 'Male'],
+    ]);
+    final restored = CompetitorSpreadsheetCodec.decode(
+      Uint8List.fromList(CompetitorSpreadsheetCodec.encode(imported)),
+    );
+    expect(restored.map((item) => item.belt), ['Kiddies - Purple', 'Kiddies - Black']);
+    expect(restored.map((item) => item.gender), [Gender.female, Gender.male]);
+  });
+
   testWidgets('spectator display clears expired live scores', (tester) async {
     final competitors = _competitors(2);
     final live = StreamController<LiveMatchState?>.broadcast();
@@ -374,7 +506,7 @@ void main() {
 
     expect(imported, hasLength(1));
     expect(imported.single.number, '42');
-    expect(imported.single.gender, Gender.male);
+    expect(imported.single.gender, Gender.notSpecified);
     expect(imported.single.beltRank, beltToRank('Kiddies'));
     expect(imported.single.birthDate, DateTime(2012, 1, 1));
     expect(imported.single.club, 'West');

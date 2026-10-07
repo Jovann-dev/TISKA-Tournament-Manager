@@ -20,13 +20,18 @@ Map<String, dynamic> mergeTournamentSnapshots({
     'competitors': 'id',
     'divisions': 'id',
     'tatamiDefinitions': 'name',
+    'competitionCategories': 'id',
   }.entries) {
+    Object? rows(Map<String, dynamic> snapshot) =>
+        section.key == 'competitionCategories' && !snapshot.containsKey(section.key)
+            ? defaultCompetitionCategories().map((item) => item.toMap()).toList()
+            : snapshot[section.key];
     merged[section.key] = _mergeRows(
       section.key,
       section.value,
-      base[section.key],
-      local[section.key],
-      remote[section.key],
+      rows(base),
+      rows(local),
+      rows(remote),
     );
   }
   List<Map<String, dynamic>> flattenLogs(Map<String, dynamic> snapshot) => [
@@ -117,6 +122,9 @@ bool divisionHasResults(Division division) =>
 bool sameDivisionBracket(Division left, Division right) =>
     _same(left.competitorIds, right.competitorIds) &&
     left.competitionType == right.competitionType &&
+    left.categoryId == right.categoryId &&
+    left.competitionLabel == right.competitionLabel &&
+    left.scoringTemplate == right.scoringTemplate &&
     left.minAge == right.minAge &&
     left.maxAge == right.maxAge &&
     left.minBeltRank == right.minBeltRank &&
@@ -131,7 +139,9 @@ bool sameDivisionState(Division left, Division right) =>
 
 void validateTournamentSnapshot(
   Map<String, dynamic> before,
-  Map<String, dynamic> after,
+  Map<String, dynamic> after, {
+  bool enforceCategoryAvailability = true,
+}
 ) {
   List<Division> divisions(Map<String, dynamic> snapshot) => [
     for (final row in (snapshot['divisions'] as List? ?? const []))
@@ -146,6 +156,15 @@ void validateTournamentSnapshot(
   };
   final previous = divisions(before);
   final current = divisions(after);
+  final categories = after.containsKey('competitionCategories')
+      ? [for (final row in after['competitionCategories'] as List)
+          CompetitionCategory.fromMap(Map<String, dynamic>.from(row as Map))]
+      : defaultCompetitionCategories();
+  if (categories.map((item) => item.id).toSet().length != categories.length ||
+      categories.map((item) => item.name.toLowerCase()).toSet().length != categories.length) {
+    throw StateError('Competition category IDs and names must be unique.');
+  }
+  final categoriesById = {for (final category in categories) category.id: category};
   final competitorRows = competitors(after);
   final previousCompetitors = competitors(before);
   final tatamis = {
@@ -160,6 +179,16 @@ void validateTournamentSnapshot(
     }
   }
   for (final division in current) {
+    final category = categoriesById[division.categoryId];
+    if (category == null || category.template != division.scoringTemplate ||
+        category.name != division.competitionLabel) {
+      throw StateError('Division competition category or template does not match the catalog.');
+    }
+    final prior = previous.where((item) => item.id == division.id).firstOrNull;
+    if (enforceCategoryAvailability && !category.enabled &&
+      (prior == null || prior.categoryId != division.categoryId)) {
+      throw StateError('This competition category is not available for new divisions.');
+    }
     if (division.competitorIds.length < 2 ||
         division.competitorIds.length > 16 ||
         division.competitorIds.toSet().length !=
