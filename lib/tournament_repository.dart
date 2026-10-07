@@ -1,7 +1,9 @@
 import 'dart:async';
 
+import 'live_match_channel.dart';
 import 'live_match_state.dart';
 import 'tournament_backend.dart';
+import 'tournament_backup.dart';
 import 'tournament_local_store.dart';
 import 'tournament_models.dart';
 import 'tournament_snapshot_merge.dart';
@@ -12,6 +14,62 @@ class TournamentSyncStatus {
   final TournamentSyncState state;
   final String message;
   const TournamentSyncStatus(this.state, this.message);
+}
+
+class DivisionExecutionSession {
+  final TournamentRepository _repository;
+  Division _division;
+  Future<void> _operations = Future<void>.value();
+
+  DivisionExecutionSession._(this._repository, this._division);
+
+  Division get division => _division;
+  List<Competitor> get competitors => List<Competitor>.unmodifiable(
+    _division.competitorIds.map((id) =>
+      _repository._competitors.singleWhere((item) => item.id == id)),
+  );
+
+  Future<void> _enqueue(Future<Division> Function(Division) operation) {
+    final result = _operations.then((_) async {
+      _division = await operation(_division);
+    });
+    _operations = result.catchError((Object error) {});
+    return result;
+  }
+
+  Future<void> saveResults(
+    List<DivisionMatchRecord> records,
+    List<DivisionPlacement> placements,
+  ) => _enqueue((expected) async {
+    final updated = expected.copyWith(
+      matchRecords: List<DivisionMatchRecord>.of(records),
+      placements: List<DivisionPlacement>.of(placements),
+    );
+    await _repository.saveDivisionExecutionState(
+      expected.assignedTatamiName, expected.id,
+      matchRecords: updated.matchRecords,
+      placements: updated.placements,
+      expectedDivision: expected,
+    );
+    return updated;
+  });
+
+  Future<void> saveInProgress(DivisionInProgressMatch? match) =>
+      _enqueue((expected) async {
+        await _repository.saveDivisionInProgressMatch(
+          expected.assignedTatamiName, expected.id, match,
+          expectedDivision: expected,
+        );
+        return expected.copyWith(inProgressMatch: match);
+      });
+
+  Future<void> complete() => _enqueue((expected) async {
+    await _repository.completeDivisionOnTatami(
+      expected.assignedTatamiName, expected.id,
+      expectedDivision: expected,
+    );
+    return _repository._divisions.singleWhere((item) => item.id == expected.id);
+  });
 }
 
 class TournamentRepository {
@@ -41,6 +99,7 @@ class TournamentRepository {
       <String, LiveMatchState?>{};
   final Map<String, StreamController<LiveMatchState?>> _liveMatchControllers =
       <String, StreamController<LiveMatchState?>>{};
+  LiveMatchChannel? _liveChannel;
   final TournamentBackend _backend;
   Timer? _remoteSyncTimer;
   Map<String, dynamic> _syncBase = <String, dynamic>{};
@@ -93,10 +152,53 @@ class TournamentRepository {
     _emitDivisions();
     _initialized = true;
     _startRemoteSync();
+    if (tournamentId.trim().isNotEmpty) {
+      _liveChannel = LiveMatchChannel(
+        transport: _backend.createLiveMatchTransport(tournamentId),
+        tournamentId: tournamentId,
+        onState: _acceptLiveMatchState,
+      )..start();
+    }
   }
 
   Stream<TournamentSyncStatus> watchSyncStatus() =>
       _watchWithInitial(_syncStatus, _syncStatusController.stream);
+
+  TournamentBackup captureBackup() => TournamentBackup(
+    tournamentId: tournamentId,
+    snapshot: _buildSnapshot(),
+  );
+
+  Future<void> restoreBackup(TournamentBackup backup) async {
+    if (_disposed || _deleting || backup.tournamentId != tournamentId) {
+      throw StateError('The backup must belong to the open tournament.');
+    }
+    final checked = TournamentBackup.decode(backup.encode());
+    await synchronize();
+    if (_syncStatus.state == TournamentSyncState.conflict) {
+      throw StateError('Resolve synchronization conflicts before restoring.');
+    }
+    final replacements = {for (final item in checked.divisions) item.id: item};
+    final competitors = {for (final item in checked.competitors) item.id: item};
+    for (final current in _divisions.where(divisionHasResults)) {
+      final replacement = replacements[current.id];
+      if (replacement == null ||
+          !sameDivisionState(current, replacement) ||
+          current.competitorIds.any((id) {
+            final replacement = competitors[id];
+            return replacement == null || !sameCompetitor(
+              _competitors.singleWhere((item) => item.id == id), replacement,
+            );
+          })) {
+        throw StateError('Redo affected started divisions before restoring a backup.');
+      }
+    }
+    final snapshot = checked.snapshot;
+    validateTournamentSnapshot(_buildSnapshot(), snapshot);
+    _applySnapshot(snapshot);
+    _emitAll();
+    await _persist();
+  }
 
   void _setSyncStatus(TournamentSyncState state, String message) {
     _syncStatus = TournamentSyncStatus(state, message);
@@ -153,8 +255,8 @@ class TournamentRepository {
   }
 
   /// Watches the live on-tatami state (current match, next match, timer,
-  /// points) broadcast by the competition execution screen. This is
-  /// in-memory only and not persisted across app restarts.
+  /// points) from local execution or other devices in the same tournament.
+  /// Broadcast state is ephemeral and is not written to tournament snapshots.
   Stream<LiveMatchState?> watchLiveMatchState(String tatamiName) {
     return _watchWithInitial<LiveMatchState?>(
       _liveMatchStates[tatamiName],
@@ -163,13 +265,46 @@ class TournamentRepository {
   }
 
   void publishLiveMatchState(LiveMatchState state) {
-    _liveMatchStates[state.tatamiName] = state;
-    _liveMatchController(state.tatamiName).add(state);
+    if (_disposed || _deleting) return;
+    if (!_divisions.any((division) =>
+        division.id == state.divisionId &&
+        division.assignedTatamiName == state.tatamiName &&
+        division.progress == DivisionProgress.running)) {
+      clearLiveMatchState(state.tatamiName, divisionId: state.divisionId);
+      return;
+    }
+    final channel = _liveChannel;
+    if (channel == null) {
+      _acceptLiveMatchState(state.tatamiName, state);
+    } else {
+      channel.publish(state);
+    }
   }
 
-  void clearLiveMatchState(String tatamiName) {
-    _liveMatchStates[tatamiName] = null;
-    _liveMatchController(tatamiName).add(null);
+  void clearLiveMatchState(String tatamiName, {String? divisionId}) {
+    if (_disposed) return;
+    if (divisionId != null &&
+        _liveMatchStates[tatamiName]?.divisionId != divisionId) {
+      return;
+    }
+    final channel = _liveChannel;
+    if (channel == null) {
+      _acceptLiveMatchState(tatamiName, null);
+    } else {
+      channel.clear(tatamiName);
+    }
+  }
+
+  void _acceptLiveMatchState(String tatamiName, LiveMatchState? state) {
+    if (_disposed) return;
+    if (state != null && !_divisions.any((division) =>
+        division.id == state.divisionId &&
+        division.assignedTatamiName == tatamiName &&
+        division.progress == DivisionProgress.running)) {
+      return;
+    }
+    _liveMatchStates[tatamiName] = state;
+    _liveMatchController(tatamiName).add(state);
   }
 
   Future<void> ensureDefaultTatamis(List<String> tatamiNames) async {
@@ -416,15 +551,19 @@ class TournamentRepository {
   Future<void> saveDivisionInProgressMatch(
     String tatamiName,
     String divisionId,
-    DivisionInProgressMatch? inProgressMatch,
+    DivisionInProgressMatch? inProgressMatch, {
+    Division? expectedDivision,
+  }
   ) async {
     final divisionIndex = _divisions.indexWhere(
       (item) => item.id == divisionId,
     );
     if (divisionIndex == -1) {
+      if (expectedDivision != null) throw StateError('Division not found.');
       return;
     }
     final existing = _divisions[divisionIndex];
+    _checkExecutionState(existing, expectedDivision);
     if (existing.assignedTatamiName != tatamiName ||
         (inProgressMatch != null &&
             existing.progress != DivisionProgress.running)) {
@@ -483,6 +622,7 @@ class TournamentRepository {
     required List<DivisionMatchRecord> matchRecords,
     required List<DivisionPlacement> placements,
     String? logMessage,
+    Division? expectedDivision,
   }) async {
     final divisionIndex = _divisions.indexWhere(
       (item) => item.id == divisionId,
@@ -491,6 +631,7 @@ class TournamentRepository {
       throw StateError('Division not found.');
     }
     final existing = _divisions[divisionIndex];
+    _checkExecutionState(existing, expectedDivision);
     if (existing.assignedTatamiName != tatamiName ||
         existing.progress != DivisionProgress.running) {
       throw StateError(
@@ -505,6 +646,25 @@ class TournamentRepository {
     _emitDivisions();
     _emitTatamiLogs();
     await _persist();
+  }
+
+  void _checkExecutionState(Division existing, Division? expected) {
+    if (expected != null &&
+        (_syncStatus.state == TournamentSyncState.conflict ||
+            !sameDivisionState(existing, expected))) {
+      throw StateError(
+        'Division changed in another editor. Reopen it before saving results.',
+      );
+    }
+  }
+
+  Future<DivisionExecutionSession> openDivisionExecution(
+    String tatamiName, String divisionId,
+  ) async {
+    await startDivisionOnTatami(tatamiName, divisionId);
+    return DivisionExecutionSession._(
+      this, _divisions.singleWhere((item) => item.id == divisionId),
+    );
   }
 
   Future<void> startDivisionOnTatami(
@@ -564,7 +724,9 @@ class TournamentRepository {
 
   Future<void> completeDivisionOnTatami(
     String tatamiName,
-    String divisionId,
+    String divisionId, {
+    Division? expectedDivision,
+  }
   ) async {
     final divisionIndex = _divisions.indexWhere(
       (item) => item.id == divisionId,
@@ -574,6 +736,7 @@ class TournamentRepository {
     }
 
     final existing = _divisions[divisionIndex];
+  _checkExecutionState(existing, expectedDivision);
     if (existing.assignedTatamiName != tatamiName) {
       throw StateError('Division has moved to another tatami.');
     }
@@ -585,6 +748,7 @@ class TournamentRepository {
     final division = _divisions[divisionIndex].copyWith(
       progress: DivisionProgress.completed,
       completedAt: DateTime.now().millisecondsSinceEpoch,
+      inProgressMatch: null,
     );
     _divisions[divisionIndex] = division;
     final currentAssignment = _tatamiAssignments[tatamiName];
@@ -1129,6 +1293,7 @@ class TournamentRepository {
   Future<void> dispose() async {
     _disposed = true;
     _remoteSyncTimer?.cancel();
+    await _liveChannel?.dispose();
     await _localWriteQueue;
     await Future.wait([
       _competitorsController.close(),
@@ -1191,6 +1356,14 @@ class TournamentRepository {
   }
 
   void _emitDivisions() {
+    for (final state in _liveMatchStates.values.whereType<LiveMatchState>().toList()) {
+      if (!_divisions.any((division) =>
+          division.id == state.divisionId &&
+          division.assignedTatamiName == state.tatamiName &&
+          division.progress == DivisionProgress.running)) {
+        clearLiveMatchState(state.tatamiName, divisionId: state.divisionId);
+      }
+    }
     _divisionsController.add(_sortedDivisions());
   }
 

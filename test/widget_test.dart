@@ -5,6 +5,7 @@
 // gestures. You can also use WidgetTester to find child widgets in the widget
 // tree, read text, and verify that the values of widget properties are correct.
 
+import 'dart:async';
 import 'dart:isolate';
 
 import 'package:archive/archive.dart';
@@ -19,6 +20,8 @@ import 'package:tiska_tournament_manager/division_registration_screen.dart';
 import 'package:tiska_tournament_manager/main.dart';
 import 'package:tiska_tournament_manager/draw_sheet_screen.dart';
 import 'package:tiska_tournament_manager/home_screen.dart';
+import 'package:tiska_tournament_manager/live_match_state.dart';
+import 'package:tiska_tournament_manager/tatami_display_screen.dart';
 import 'package:tiska_tournament_manager/tournament_backend.dart';
 import 'package:tiska_tournament_manager/tournament_models.dart';
 
@@ -129,6 +132,97 @@ Widget _competitionExecution(
 }
 
 void main() {
+  testWidgets('spectator display clears expired live scores', (tester) async {
+    final competitors = _competitors(2);
+    final live = StreamController<LiveMatchState?>.broadcast();
+    addTearDown(live.close);
+    final division = _divisionFor(competitors).copyWith(progress: DivisionProgress.running);
+    await tester.pumpWidget(MaterialApp(
+      home: TatamiDisplayScreen(
+        watchTatamiDefinitions: () => Stream.value([
+          const TatamiDefinition(name: 'Tatami 1', judgesCount: 5),
+        ]),
+        watchDivisions: () => Stream.value([division]),
+        watchCompetitors: () => Stream.value(competitors),
+        watchLiveMatchState: (_) => live.stream,
+      ),
+    ));
+    await tester.pumpAndSettle();
+    live.add(LiveMatchState(
+      tatamiName: 'Tatami 1', divisionId: division.id, divisionTitle: division.title,
+      competitionType: CompetitionType.kata,
+      executionMode: CompetitionExecutionMode.flagVoting,
+      updatedAt: 1, competitorA: competitors[0], competitorB: competitors[1],
+    ));
+    await tester.pumpAndSettle();
+    expect(find.text('VS'), findsOneWidget);
+    live.add(null);
+    await tester.pumpAndSettle();
+    expect(find.text('VS'), findsNothing);
+    expect(find.text('Waiting for live updates...'), findsOneWidget);
+  });
+
+  testWidgets('spectator display selects an existing tatami after remote removal', (tester) async {
+    final definitions = StreamController<List<TatamiDefinition>>.broadcast();
+    addTearDown(definitions.close);
+    await tester.pumpWidget(MaterialApp(
+      home: TatamiDisplayScreen(
+        watchTatamiDefinitions: () => definitions.stream,
+        watchDivisions: () => Stream.value([]),
+        watchCompetitors: () => Stream.value([]),
+        watchLiveMatchState: (_) => Stream.value(null),
+      ),
+    ));
+    definitions.add(const [
+      TatamiDefinition(name: 'Tatami 1', judgesCount: 5),
+      TatamiDefinition(name: 'Tatami 2', judgesCount: 5),
+    ]);
+    await tester.pumpAndSettle();
+    definitions.add(const [TatamiDefinition(name: 'Tatami 2', judgesCount: 5)]);
+    await tester.pumpAndSettle();
+    final selector = tester.widget<DropdownButton<String>>(find.byType(DropdownButton<String>));
+    expect(selector.value, 'Tatami 2');
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('reused kumite results follow competitor IDs when sides reverse', (tester) async {
+    final competitors = _competitors(3);
+    var saved = <DivisionMatchRecord>[];
+    final division = _executionDivision(competitors).copyWith(
+      competitionType: CompetitionType.jiyuKumite,
+      matchRecords: [
+        DivisionMatchRecord(
+          matchId: 'match_1', roundLabel: 'Semifinal',
+          competitorAId: competitors[0].id, competitorBId: competitors[1].id,
+          winnerId: competitors[1].id, loserId: competitors[0].id,
+          competitorAPoints: 1, competitorBPoints: 2,
+          competitorAWarningStage: 2, competitorBWarningStage: 1,
+          events: [DivisionMatchEventRecord(
+            competitorId: competitors[1].id, kind: KumiteEventKind.ippon,
+            timestamp: 1, pointsAwarded: 2,
+          )],
+        ),
+        DivisionMatchRecord(
+          matchId: 'match_2', roundLabel: 'Semifinal',
+          competitorAId: competitors[2].id, competitorBId: competitors[0].id,
+          winnerId: competitors[0].id, loserId: competitors[2].id,
+        ),
+      ],
+    );
+    await tester.pumpWidget(_competitionExecution(
+      competitors, (records, _) => saved = records, division: division,
+    ));
+    await tester.pumpAndSettle();
+    final reused = saved.singleWhere((record) => record.reusedPreviousResult);
+    expect(reused.competitorAId, competitors[1].id);
+    expect(reused.competitorAPoints, 2);
+    expect(reused.competitorBPoints, 1);
+    expect(reused.competitorAWarningStage, 1);
+    expect(reused.competitorBWarningStage, 2);
+    expect(reused.events.single.competitorId, competitors[1].id);
+    await tester.pumpWidget(const SizedBox());
+  });
+
   testWidgets('an expired kumite timer reopens at zero', (tester) async {
     final competitors = _competitors(2);
     await tester.pumpWidget(_competitionExecution(

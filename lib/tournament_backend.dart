@@ -1,5 +1,7 @@
 import 'package:supabase_flutter/supabase_flutter.dart';
 
+import 'live_match_channel.dart';
+
 class TournamentRegistration {
   final String id;
   final String password;
@@ -47,6 +49,9 @@ class TournamentBackend {
 
   static const Duration _requestTimeout = Duration(seconds: 10);
   final SupabaseClient _client;
+
+  LiveMatchTransport createLiveMatchTransport(String tournamentId) =>
+      SupabaseLiveMatchTransport(_client, tournamentId);
 
   Future<List<TournamentRegistration>> loadTournamentRegistrations() async {
     final response = await _client

@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'competition_results_screen.dart';
 import 'live_match_state.dart';
 import 'tournament_models.dart';
+import 'tournament_repository.dart';
 
 class CompetitionExecutionScreen extends StatefulWidget {
   final String tournamentId;
@@ -12,6 +13,8 @@ class CompetitionExecutionScreen extends StatefulWidget {
   final Division division;
   final List<Competitor> competitors;
   final int judgesCount;
+  final Future<DivisionExecutionSession> Function(String, String)?
+      onOpenExecution;
   final Future<void> Function(String tatamiName, int judgesCount)
   onJudgeCountChanged;
   final Future<void> Function(String tatamiName, String divisionId)
@@ -27,6 +30,7 @@ class CompetitionExecutionScreen extends StatefulWidget {
   })
   onSaveExecutionState;
   final void Function(LiveMatchState state) onPublishLiveState;
+  final void Function(String tatamiName, String divisionId)? onClearLiveState;
   final Future<void> Function(
     String tatamiName,
     String divisionId,
@@ -41,11 +45,13 @@ class CompetitionExecutionScreen extends StatefulWidget {
     required this.division,
     required this.competitors,
     required this.judgesCount,
+    this.onOpenExecution,
     required this.onJudgeCountChanged,
     required this.onStartDivision,
     required this.onCompleteDivision,
     required this.onSaveExecutionState,
     required this.onPublishLiveState,
+    this.onClearLiveState,
     required this.onSaveInProgressMatch,
   });
 
@@ -56,9 +62,11 @@ class CompetitionExecutionScreen extends StatefulWidget {
 
 class _CompetitionExecutionScreenState
     extends State<CompetitionExecutionScreen> {
-  late final _CompetitionPlan _plan;
-  late final List<Competitor> _planCompetitors;
-  late final Map<String, Competitor> _competitorsById;
+  late _CompetitionPlan _plan;
+  late List<Competitor> _planCompetitors;
+  late Map<String, Competitor> _competitorsById;
+  DivisionExecutionSession? _executionSession;
+  bool _executionCompleted = false;
   final Map<String, _RecordedMatch> _results = <String, _RecordedMatch>{};
   final List<_PlannedMatch> _repechageMatches = <_PlannedMatch>[];
   List<_CompetitorSource> _repechageFinalistSources =
@@ -164,7 +172,25 @@ class _CompetitionExecutionScreenState
 
   Future<void> _prepareCompetition() async {
     try {
-      await widget.onStartDivision(widget.tatamiName, widget.division.id);
+      final openExecution = widget.onOpenExecution;
+      if (openExecution == null) {
+        await widget.onStartDivision(widget.tatamiName, widget.division.id);
+      } else {
+        final session = await openExecution(widget.tatamiName, widget.division.id);
+        if (!mounted) return;
+        _executionSession = session;
+        final current = session.division;
+        _planCompetitors = session.competitors;
+        if (_planCompetitors.length != current.competitorIds.length) {
+          throw StateError('Competitors changed. Reopen the competition floor.');
+        }
+        _competitorsById = {for (final item in _planCompetitors) item.id: item};
+        _plan = _CompetitionPlan.build(_planCompetitors);
+        _repechageMatches.clear();
+        _repechageFinalistSources = [];
+        _results..clear()..addAll(_hydrateRecordedMatches(current.matchRecords));
+        _pendingHydrateInProgress = current.inProgressMatch;
+      }
       await _autoReusePreviousResults();
       if (!mounted) return;
       setState(() => _initializing = false);
@@ -239,7 +265,8 @@ class _CompetitionExecutionScreenState
   }
 
   bool get _isJiyuKumite =>
-      widget.division.competitionType == CompetitionType.jiyuKumite;
+      (_executionSession?.division ?? widget.division).competitionType ==
+      CompetitionType.jiyuKumite;
 
   void _publishLiveState() {
     final current = _currentMatch;
@@ -292,15 +319,12 @@ class _CompetitionExecutionScreenState
   /// they are not lost if the organizer leaves this screen before recording
   /// the match. Not called on every timer tick to avoid excessive writes.
   void _persistInProgressMatch() {
-    if (!_isJiyuKumite) {
+    if (!_isJiyuKumite || _initializing ||
+        _initializationError != null || _executionCompleted) {
       return;
     }
     final currentMatch = _currentMatch;
-    unawaited(
-      widget.onSaveInProgressMatch(
-        widget.tatamiName,
-        widget.division.id,
-        currentMatch == null
+    final pending = currentMatch == null
             ? null
             : DivisionInProgressMatch(
                 matchId: currentMatch.match.id,
@@ -314,9 +338,32 @@ class _CompetitionExecutionScreenState
                 timerRunning: _jiyuTimerRunning,
                 timerEndsAtMillis: _jiyuTimerEndsAt?.millisecondsSinceEpoch,
                 events: List<DivisionMatchEventRecord>.from(_jiyuEvents),
-              ),
-      ),
-    );
+              );
+    final save = _executionSession?.saveInProgress(pending) ??
+        widget.onSaveInProgressMatch(
+          widget.tatamiName, widget.division.id, pending,
+        );
+    unawaited(save.catchError(_handleExecutionError));
+  }
+
+  void _handleExecutionError(Object error) {
+    if (!mounted) return;
+    _disposeJiyuTimer();
+    setState(() => _initializationError = error.toString());
+  }
+
+  Future<void> _saveResults(
+    List<DivisionMatchRecord> records, List<DivisionPlacement> placements,
+  ) async {
+    final session = _executionSession;
+    if (session != null) {
+      await session.saveResults(records, placements);
+    } else {
+      await widget.onSaveExecutionState(
+        widget.tatamiName, widget.division.id,
+        matchRecords: records, placements: placements,
+      );
+    }
   }
 
   void _resetJiyuState({bool clearEvents = true}) {
@@ -1219,13 +1266,13 @@ class _CompetitionExecutionScreenState
     }
     _publishLiveState();
     _persistInProgressMatch();
-    await widget.onSaveExecutionState(
-      widget.tatamiName,
-      widget.division.id,
-      matchRecords: _toMatchRecords(updatedResults),
-      placements: _buildPlacements(updatedResults),
-      logMessage: logMessages.isEmpty ? null : logMessages.join(' '),
-    );
+    try {
+      await _saveResults(
+        _toMatchRecords(updatedResults), _buildPlacements(updatedResults),
+      );
+    } catch (error) {
+      _handleExecutionError(error);
+    }
   }
 
   _RecordedMatch? _findHeadToHeadResult(
@@ -1283,10 +1330,14 @@ class _CompetitionExecutionScreenState
       competitorAFlags: competitorAFlags,
       competitorBFlags: competitorBFlags,
       events: previousResult.events,
-      competitorAPoints: previousResult.competitorAPoints,
-      competitorBPoints: previousResult.competitorBPoints,
-      competitorAWarningStage: previousResult.competitorAWarningStage,
-      competitorBWarningStage: previousResult.competitorBWarningStage,
+        competitorAPoints: previousResult.competitorA.id == currentMatch.competitorA.id
+          ? previousResult.competitorAPoints : previousResult.competitorBPoints,
+        competitorBPoints: previousResult.competitorA.id == currentMatch.competitorA.id
+          ? previousResult.competitorBPoints : previousResult.competitorAPoints,
+        competitorAWarningStage: previousResult.competitorA.id == currentMatch.competitorA.id
+          ? previousResult.competitorAWarningStage : previousResult.competitorBWarningStage,
+        competitorBWarningStage: previousResult.competitorA.id == currentMatch.competitorA.id
+          ? previousResult.competitorBWarningStage : previousResult.competitorAWarningStage,
       finishReason: previousResult.finishReason,
       reusedPreviousResult: true,
     );
@@ -1423,19 +1474,15 @@ class _CompetitionExecutionScreenState
     try {
       final placements = _buildPlacements(_results);
       final matchRecords = _toMatchRecords(_results);
-      await widget.onSaveExecutionState(
-        widget.tatamiName,
-        widget.division.id,
-        matchRecords: matchRecords,
-        placements: placements,
-        logMessage: 'Competition finished with final placements recorded.',
-      );
-      await widget.onCompleteDivision(widget.tatamiName, widget.division.id);
-      await widget.onSaveInProgressMatch(
-        widget.tatamiName,
-        widget.division.id,
-        null,
-      );
+      await _saveResults(matchRecords, placements);
+      final session = _executionSession;
+      if (session != null) {
+        await session.complete();
+      } else {
+        await widget.onCompleteDivision(widget.tatamiName, widget.division.id);
+        await widget.onSaveInProgressMatch(widget.tatamiName, widget.division.id, null);
+      }
+      _executionCompleted = true;
       if (!mounted) {
         return;
       }
@@ -1492,6 +1539,7 @@ class _CompetitionExecutionScreenState
   void dispose() {
     _persistInProgressMatch();
     _disposeJiyuTimer();
+    widget.onClearLiveState?.call(widget.tatamiName, widget.division.id);
     super.dispose();
   }
 

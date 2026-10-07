@@ -37,6 +37,45 @@ entrants, draw order, competition criteria, or competitor registrations. Redo
 clears results and unfinished match state. Import replaces registrations only
 after confirmation and rejects removals that invalidate divisions.
 
+## Tournament Backups
+
+Save Data captures one detached tournament snapshot for draw-sheet images,
+division logs, and `tournament_backup.json`, including unfinished match state.
+On the web these files are downloaded in a ZIP; desktop exports save them into
+the selected folder. Backups also work before any divisions have been created.
+Credentials and synchronization metadata are not included.
+
+Open the same tournament and use Restore tournament backup to select the JSON
+file (extract it from the ZIP first). Restore validates the file and requires
+confirmation. It rejects changes to started or completed divisions; explicitly
+redo affected divisions first only if discarding their results is intentional.
+Offline restores are saved locally and queued for synchronization. Close other
+editing sessions during restore, and keep backups secure because they contain
+competitor personal data.
+
+## Spectator Displays
+
+Open the same tournament on another device or browser tab, choose Tatami
+Display, and select the tatami. Live competitors, scores, warnings, and timer
+deadlines are shared through tournament-scoped Supabase Realtime Broadcast.
+No database migration or table-replication configuration is required.
+
+Late viewers request the current state. Connections replay state after
+reconnecting, and active execution screens send a heartbeat every five seconds.
+Disconnected or stale remote state expires after about twenty seconds; the
+display waits for fresh updates rather than keeping old scores on screen.
+Leaving the execution screen stops its broadcast. Live messages are ephemeral,
+do not write tournament snapshots, and omit competitor ages, birth dates,
+belts, clubs, and passwords. Channels use the existing public access model;
+this is not a replacement for the authentication hardening described above.
+
+An opt-in two-client network smoke test uses a unique synthetic topic without
+reading or writing tournament rows:
+
+```bash
+flutter test --dart-define=TISKA_LIVE_SMOKE_TEST=true test/tournament_repository_test.dart --plain-name "Supabase live broadcast reaches a separate client"
+```
+
 ## Toolchain
 
 Use Flutter **3.47.4**, which includes Dart **3.13.3**. Both GitHub Actions and

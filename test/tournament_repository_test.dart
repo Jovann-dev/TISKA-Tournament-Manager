@@ -5,7 +5,11 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:excel/excel.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:tiska_tournament_manager/live_match_channel.dart';
+import 'package:tiska_tournament_manager/live_match_state.dart';
+import 'package:tiska_tournament_manager/supabase_config.dart';
 import 'package:tiska_tournament_manager/tournament_backend.dart';
+import 'package:tiska_tournament_manager/tournament_backup.dart';
 import 'package:tiska_tournament_manager/tournament_local_store.dart';
 import 'package:tiska_tournament_manager/tournament_models.dart';
 import 'package:tiska_tournament_manager/tournament_repository.dart';
@@ -14,6 +18,61 @@ import 'package:tiska_tournament_manager/division_process_log_spreadsheet_codec.
 
 Map<String, dynamic> clone(Map<String, dynamic> value) =>
     Map<String, dynamic>.from(jsonDecode(jsonEncode(value)) as Map);
+
+class FakeLiveBus {
+  final List<FakeLiveTransport> clients = [];
+
+  FakeLiveTransport transport() {
+    final client = FakeLiveTransport(this);
+    clients.add(client);
+    return client;
+  }
+}
+
+class FakeLiveTransport implements LiveMatchTransport {
+  final FakeLiveBus bus;
+  final List<Map<String, dynamic>> sent = [];
+  void Function(Map<String, dynamic>)? onMessage;
+  void Function(bool)? onConnectionChanged;
+  bool connected = false;
+  bool failSends = false;
+  bool disposed = false;
+
+  FakeLiveTransport(this.bus);
+
+  @override
+  void connect({
+    required void Function(Map<String, dynamic>) onMessage,
+    required void Function(bool) onConnectionChanged,
+  }) {
+    this.onMessage = onMessage;
+    this.onConnectionChanged = onConnectionChanged;
+    setConnected(true);
+  }
+
+  void setConnected(bool value) {
+    connected = value;
+    onConnectionChanged?.call(value);
+  }
+
+  @override
+  Future<void> send(Map<String, dynamic> message) async {
+    if (!connected || failSends) throw StateError('Broadcast unavailable');
+    sent.add(clone(message));
+    for (final client in bus.clients.toList()) {
+      if (client != this && client.connected && !client.disposed) {
+        client.onMessage?.call(clone(message));
+      }
+    }
+  }
+
+  @override
+  Future<void> dispose() async {
+    disposed = true;
+    connected = false;
+    bus.clients.remove(this);
+  }
+}
 
 class MemoryStore extends TournamentLocalStore {
   Map<String, dynamic>? value;
@@ -38,6 +97,7 @@ class MemoryStore extends TournamentLocalStore {
 }
 
 class FakeBackend extends TournamentBackend {
+  final FakeLiveBus liveBus = FakeLiveBus();
   Map<String, dynamic> remote;
   bool offline = false;
   int competingWrites = 0;
@@ -49,6 +109,9 @@ class FakeBackend extends TournamentBackend {
 
   FakeBackend(this.remote)
     : super(client: SupabaseClient('http://localhost', 'test-key'));
+
+  @override
+  LiveMatchTransport createLiveMatchTransport(String tournamentId) => liveBus.transport();
 
   @override
   Future<Map<String, dynamic>> loadTournamentSnapshot(
@@ -175,6 +238,364 @@ Map<String, dynamic> snapshot(Map<String, int> scores) => {
 };
 
 void main() {
+  test('Supabase live broadcast reaches a separate client', () async {
+    final publisherClient = SupabaseClient(SupabaseConfig.url, SupabaseConfig.publishableKey);
+    final viewerClient = SupabaseClient(SupabaseConfig.url, SupabaseConfig.publishableKey);
+    final tournamentId = '__live_smoke_${DateTime.now().microsecondsSinceEpoch}';
+    final received = Completer<LiveMatchState>();
+    final cleared = Completer<void>();
+    final publisher = LiveMatchChannel(
+      transport: SupabaseLiveMatchTransport(publisherClient, tournamentId),
+      tournamentId: tournamentId,
+      onState: (_, _) {},
+    );
+    final viewer = LiveMatchChannel(
+      transport: SupabaseLiveMatchTransport(viewerClient, tournamentId),
+      tournamentId: tournamentId,
+      onState: (_, state) {
+        if (state != null && !received.isCompleted) received.complete(state);
+        if (state == null && received.isCompleted && !cleared.isCompleted) cleared.complete();
+      },
+    );
+    try {
+      publisher.publish(LiveMatchState(
+        tatamiName: 'Smoke Tatami', divisionId: 'synthetic', divisionTitle: 'Synthetic live test',
+        competitionType: CompetitionType.jiyuKumite,
+        executionMode: CompetitionExecutionMode.manualWinner,
+        updatedAt: DateTime.now().millisecondsSinceEpoch,
+        competitorAPoints: 2, competitorBWarningStage: 1,
+      ));
+      publisher.start();
+      viewer.start();
+      final state = await received.future.timeout(const Duration(seconds: 15));
+      expect(state.competitorAPoints, 2);
+      expect(state.competitorBWarningStage, 1);
+      publisher.clear('Smoke Tatami');
+      await cleared.future.timeout(const Duration(seconds: 5));
+    } finally {
+      await Future.wait([publisher.dispose(), viewer.dispose()]);
+      await publisherClient.dispose();
+      await viewerClient.dispose();
+    }
+  }, skip: !const bool.fromEnvironment('TISKA_LIVE_SMOKE_TEST'));
+
+  test('two repositories share live scores without snapshot writes', () async {
+    final backend = FakeBackend(initialSnapshot());
+    final publisher = await repository(backend, MemoryStore());
+    await publisher.startDivisionOnTatami('Tatami 1', 'one');
+    final viewer = await repository(backend, MemoryStore());
+    final revision = backend.remote['revision'];
+
+    publisher.publishLiveMatchState(LiveMatchState(
+      tatamiName: 'Tatami 1', divisionId: 'one', divisionTitle: 'Division',
+      competitionType: CompetitionType.jiyuKumite,
+      executionMode: CompetitionExecutionMode.manualWinner,
+      updatedAt: 1000, competitorA: entrants()[0], competitorB: entrants()[1],
+      hasTimer: true, timerTotalSeconds: 90, timerRemainingSeconds: 30,
+      timerRunning: true, timerEndsAtMillis: 31000, competitorAPoints: 2,
+    ));
+
+    final received = await viewer.watchLiveMatchState('Tatami 1').first;
+    expect(received!.competitorAPoints, 2);
+    expect(received.timerEndsAtMillis, 31000);
+    expect(backend.remote['revision'], revision);
+    publisher.clearLiveMatchState('Tatami 1', divisionId: 'one');
+    expect(await viewer.watchLiveMatchState('Tatami 1').first, isNull);
+  });
+
+  testWidgets('live broadcasts reach late viewers and recover after reconnect', (tester) async {
+    final bus = FakeLiveBus();
+    final publisherTransport = bus.transport();
+    final viewerTransport = bus.transport();
+    final otherTransport = bus.transport();
+    LiveMatchState? received;
+    LiveMatchState? otherReceived;
+    final publisher = LiveMatchChannel(
+      transport: publisherTransport,
+      tournamentId: 'test',
+      onState: (_, _) {},
+    );
+    final viewer = LiveMatchChannel(
+      transport: viewerTransport,
+      tournamentId: 'test',
+      onState: (_, state) => received = state,
+    );
+    final other = LiveMatchChannel(
+      transport: otherTransport,
+      tournamentId: 'other',
+      onState: (_, state) => otherReceived = state,
+    );
+    publisher.start();
+    publisher.publish(LiveMatchState(
+      tatamiName: 'Tatami 1', divisionId: 'one', divisionTitle: 'Division',
+      competitionType: CompetitionType.kata,
+      executionMode: CompetitionExecutionMode.flagVoting,
+      updatedAt: 1, competitorA: entrants()[0], competitorB: entrants()[1],
+    ));
+    viewer.start();
+    other.start();
+    expect(received!.competitorA!.id, 'c0');
+    expect(otherReceived, isNull);
+    viewerTransport.setConnected(false);
+    expect(received, isNull);
+    viewerTransport.setConnected(true);
+    expect(received!.divisionId, 'one');
+    publisher.clear('Tatami 1');
+    expect(received, isNull);
+    await publisher.dispose();
+    await viewer.dispose();
+    await other.dispose();
+  });
+
+  testWidgets('live heartbeats recover failed sends and expire lost publishers', (tester) async {
+    final bus = FakeLiveBus();
+    final publisherTransport = bus.transport();
+    final viewerTransport = bus.transport();
+    var now = DateTime.utc(2026);
+    LiveMatchState? received;
+    final publisher = LiveMatchChannel(
+      transport: publisherTransport, tournamentId: 'test',
+      onState: (_, _) {}, now: () => now,
+    );
+    final viewer = LiveMatchChannel(
+      transport: viewerTransport, tournamentId: 'test',
+      onState: (_, state) => received = state, now: () => now,
+    );
+    publisher.start();
+    viewer.start();
+    publisherTransport.failSends = true;
+    publisher.publish(const LiveMatchState(
+      tatamiName: 'Tatami 1', divisionId: 'one', divisionTitle: 'Division',
+      competitionType: CompetitionType.kata,
+      executionMode: CompetitionExecutionMode.flagVoting, updatedAt: 1,
+    ));
+    await tester.pump();
+    expect(received, isNull);
+    publisherTransport.failSends = false;
+    now = now.add(const Duration(seconds: 5));
+    await tester.pump(const Duration(seconds: 5));
+    expect(received!.divisionId, 'one');
+    publisherTransport.setConnected(false);
+    now = now.add(const Duration(seconds: 20));
+    await tester.pump(const Duration(seconds: 20));
+    expect(received, isNull);
+    publisherTransport.setConnected(true);
+    expect(received!.divisionId, 'one');
+    await publisher.dispose();
+    expect(received, isNull);
+    await viewer.dispose();
+    expect(publisherTransport.disposed, isTrue);
+    expect(viewerTransport.disposed, isTrue);
+  });
+
+  testWidgets('live receivers ignore malformed and reordered packets', (tester) async {
+    final transport = FakeLiveBus().transport();
+    LiveMatchState? received;
+    final viewer = LiveMatchChannel(
+      transport: transport, tournamentId: 'test',
+      onState: (_, state) => received = state,
+    );
+    viewer.start();
+    final state = LiveMatchState(
+      tatamiName: 'Tatami 1', divisionId: 'one', divisionTitle: 'Division',
+      competitionType: CompetitionType.kata,
+      executionMode: CompetitionExecutionMode.flagVoting, updatedAt: 1,
+      competitorAPoints: 2,
+    );
+    final message = <String, dynamic>{
+      'version': 1, 'tournamentId': 'test', 'senderId': 'publisher',
+      'sequence': 2, 'kind': 'state', 'tatamiName': 'Tatami 1',
+      'state': state.toMap(),
+    };
+    transport.onMessage!(message);
+    expect(received!.competitorAPoints, 2);
+    transport.onMessage!({...message, 'sequence': 1, 'state': {...state.toMap(), 'competitorAPoints': 0}});
+    transport.onMessage!({...message, 'sequence': 3, 'state': 'invalid'});
+    transport.onMessage!({...message, 'sequence': 3, 'state': {...state.toMap(), 'competitorAPoints': -1}});
+    expect(received!.competitorAPoints, 2);
+    await viewer.dispose();
+  });
+
+  test('live match wire format preserves display state without personal details', () {
+    final state = LiveMatchState(
+      tatamiName: 'Tatami 1',
+      divisionId: 'one',
+      divisionTitle: 'Test division',
+      competitionType: CompetitionType.jiyuKumite,
+      executionMode: CompetitionExecutionMode.manualWinner,
+      updatedAt: 1000,
+      competitorA: entrants().first.copyWith(
+        club: 'Private club', birthDate: DateTime(2016),
+      ),
+      competitorB: entrants()[1],
+      hasTimer: true,
+      timerTotalSeconds: 90,
+      timerRemainingSeconds: 35,
+      timerRunning: true,
+      timerEndsAtMillis: 36000,
+      competitorAPoints: 2,
+      competitorBWarningStage: 1,
+    );
+    final payload = state.toMap();
+    final restored = LiveMatchState.fromMap(clone(payload));
+    expect(restored.competitorA!.id, 'c0');
+    expect(restored.competitorB!.name, 'Entrant 1');
+    expect(restored.competitorAPoints, 2);
+    expect(restored.competitorBWarningStage, 1);
+    expect(restored.timerEndsAtMillis, 36000);
+    expect((payload['competitorA'] as Map).keys.toSet(), {'id', 'number', 'name'});
+    expect(() => LiveMatchState.fromMap({...payload, 'competitorAPoints': -1}), throwsFormatException);
+    expect(() => LiveMatchState.fromMap({...payload, 'competitionType': 'unknown'}), throwsFormatException);
+  });
+
+  test('backups are detached, versioned and exclude synchronization metadata', () async {
+    final backend = FakeBackend(initialSnapshot());
+    final result = await repository(backend, MemoryStore());
+    final backup = result.captureBackup();
+    await result.saveCompetitor(entrants().first.copyWith(name: 'Changed'));
+    final restored = TournamentBackup.decode(backup.encode());
+    expect(restored.competitors.first.name, 'Entrant 0');
+    expect(restored.snapshot.containsKey('_syncBase'), isFalse);
+    expect(restored.snapshot.containsKey('revision'), isFalse);
+    final detached = backup.snapshot;
+    (detached['competitors'] as List).clear();
+    expect(backup.competitors, hasLength(4));
+    final invalid = jsonDecode(utf8.decode(backup.encode())) as Map;
+    invalid['version'] = 99;
+    expect(() => TournamentBackup.decode(utf8.encode(jsonEncode(invalid))), throwsFormatException);
+  });
+
+  test('empty tournaments produce valid restorable backups', () {
+    final backup = TournamentBackup(tournamentId: 'test', snapshot: {});
+    final restored = TournamentBackup.decode(backup.encode());
+
+    expect(restored.tournamentId, 'test');
+    expect(restored.competitors, isEmpty);
+    expect(restored.divisions, isEmpty);
+    expect(restored.tatamiDefinitions, isEmpty);
+    expect(restored.tatamiLogs, isEmpty);
+  });
+
+  test('backup decoding rejects malformed data and invalid references', () {
+    final backup = TournamentBackup(
+      tournamentId: 'test',
+      snapshot: initialSnapshot(),
+    );
+    List<int> altered(void Function(Map<String, dynamic>) change) {
+      final envelope = jsonDecode(utf8.decode(backup.encode()))
+          as Map<String, dynamic>;
+      change(envelope);
+      return utf8.encode(jsonEncode(envelope));
+    }
+
+    expect(() => TournamentBackup.decode(utf8.encode('{')), throwsFormatException);
+    expect(
+      () => TournamentBackup.decode(altered((envelope) {
+        envelope['capturedAt'] = 'invalid';
+      })),
+      throwsFormatException,
+    );
+    expect(
+      () => TournamentBackup.decode(altered((envelope) {
+        (envelope['snapshot'] as Map).remove('divisions');
+      })),
+      throwsFormatException,
+    );
+    expect(
+      () => TournamentBackup.decode(altered((envelope) {
+        final rows = (envelope['snapshot'] as Map)['competitors'] as List;
+        rows.add(rows.first);
+      })),
+      throwsFormatException,
+    );
+    expect(
+      () => TournamentBackup.decode(altered((envelope) {
+        final rows = (envelope['snapshot'] as Map)['divisions'] as List;
+        rows.first['data']['competitorIds'] = ['missing', 'c1'];
+      })),
+      throwsFormatException,
+    );
+  });
+
+  test('offline backup restore persists and synchronizes on reconnect', () async {
+    final backend = FakeBackend(initialSnapshot());
+    final store = MemoryStore();
+    final result = await repository(backend, store);
+    final backup = result.captureBackup();
+    backend.offline = true;
+    await result.saveCompetitor(entrants().first.copyWith(name: 'Changed'));
+
+    await result.restoreBackup(backup);
+
+    expect(store.value!['_syncPending'], isTrue);
+    expect((store.value!['competitors'] as List).first['data']['name'], 'Entrant 0');
+    expect((await result.watchCompetitors().first).first.name, 'Entrant 0');
+    backend.offline = false;
+    await result.synchronize();
+    expect(store.value!['_syncPending'], isFalse);
+    expect((backend.remote['competitors'] as List).first['data']['name'], 'Entrant 0');
+  });
+
+  test('backup restore rejects other tournaments and changes to started divisions', () async {
+    final backend = FakeBackend(initialSnapshot());
+    final result = await repository(backend, MemoryStore());
+    final backup = result.captureBackup();
+    await result.saveCompetitor(entrants().first.copyWith(name: 'Changed'));
+    await result.restoreBackup(backup);
+    expect((await result.watchCompetitors().first).first.name, 'Entrant 0');
+    await expectLater(result.restoreBackup(TournamentBackup(
+      tournamentId: 'other', snapshot: backup.snapshot,
+    )), throwsStateError);
+    await result.startDivisionOnTatami('Tatami 1', 'one');
+    await expectLater(result.restoreBackup(backup), throwsStateError);
+    expect((await result.watchDivisions().first).first.progress, DivisionProgress.running);
+  });
+
+  test('execution sessions refresh and reject another editor changes', () async {
+    final backend = FakeBackend(initialSnapshot());
+    final result = await repository(backend, MemoryStore());
+    await result.startDivisionOnTatami('Tatami 1', 'one');
+    const record = DivisionMatchRecord(
+      matchId: 'match_1', roundLabel: 'Final',
+      competitorAId: 'c0', competitorBId: 'c1',
+      winnerId: 'c0', loserId: 'c1',
+    );
+    (backend.remote['divisions'] as List).first['data']['matchRecords'] = [record.toMap()];
+    backend.remote['revision'] = (backend.remote['revision'] as int) + 1;
+    final session = await result.openDivisionExecution('Tatami 1', 'one');
+    expect(session.division.matchRecords.single.winnerId, 'c0');
+    await session.saveInProgress(const DivisionInProgressMatch(matchId: 'match_1'));
+    await session.saveInProgress(const DivisionInProgressMatch(matchId: 'match_1', competitorAPoints: 1));
+    await result.saveDivisionExecutionState('Tatami 1', 'one', matchRecords: [], placements: []);
+    await expectLater(session.saveResults([record], []), throwsStateError);
+  });
+
+  test('stale execution writes cannot replace newer results', () async {
+    final backend = FakeBackend(initialSnapshot());
+    final result = await repository(backend, MemoryStore());
+    await result.startDivisionOnTatami('Tatami 1', 'one');
+    final stale = (await result.watchDivisions().first).first;
+    const record = DivisionMatchRecord(
+      matchId: 'match_1',
+      roundLabel: 'Final',
+      competitorAId: 'c0',
+      competitorBId: 'c1',
+      winnerId: 'c0',
+      loserId: 'c1',
+    );
+    await result.saveDivisionExecutionState(
+      'Tatami 1', 'one', matchRecords: [record], placements: [],
+    );
+    await expectLater(
+      result.saveDivisionExecutionState(
+        'Tatami 1', 'one', matchRecords: [], placements: [],
+        expectedDivision: stale,
+      ),
+      throwsStateError,
+    );
+    expect((await result.watchDivisions().first).first.matchRecords, [record]);
+  });
+
   test('tournament passwords distinguish admin and user access', () {
     final tournament = TournamentRegistration(
       id: 'test',

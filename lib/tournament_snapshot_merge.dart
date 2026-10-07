@@ -126,6 +126,9 @@ bool sameDivisionBracket(Division left, Division right) =>
 bool sameCompetitor(Competitor left, Competitor right) =>
     _same(left.toMap(), right.toMap());
 
+bool sameDivisionState(Division left, Division right) =>
+  left.id == right.id && _same(left.toMap(), right.toMap());
+
 void validateTournamentSnapshot(
   Map<String, dynamic> before,
   Map<String, dynamic> after,

@@ -48,11 +48,15 @@ class _TatamiDisplayScreenState extends State<TatamiDisplayScreen> {
       definitions,
     ) {
       setState(() {
+        final previousTatami = _selectedTatamiName;
         _tatamiDefinitions = definitions;
-        _selectedTatamiName ??= definitions.isNotEmpty
-            ? definitions.first.name
-            : null;
-        _resubscribeLiveState();
+        if (!definitions.any((definition) => definition.name == previousTatami)) {
+          _selectedTatamiName = definitions.isEmpty ? null : definitions.first.name;
+          _liveState = null;
+        }
+        if (_selectedTatamiName != previousTatami || _liveStateSubscription == null) {
+          _resubscribeLiveState();
+        }
       });
     });
     _divisionsSubscription = widget.watchDivisions().listen((divisions) {
@@ -176,7 +180,7 @@ class _TatamiDisplayScreenState extends State<TatamiDisplayScreen> {
           : _DisplayPlaceholder(
               icon: Icons.hourglass_top_rounded,
               title: runningDivision.title,
-              subtitle: 'Preparing the next match...',
+              subtitle: 'Waiting for live updates...',
             );
     } else if (completedDivision != null) {
       content = _LiveResultsView(

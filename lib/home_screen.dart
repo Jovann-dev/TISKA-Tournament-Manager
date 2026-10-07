@@ -17,6 +17,7 @@ import 'tatami_configuration_screen.dart';
 import 'tatami_display_screen.dart';
 import 'tatami_screen.dart';
 import 'tournament_access_screen.dart';
+import 'tournament_backup.dart';
 import 'tournament_results_screen.dart';
 import 'tournament_models.dart';
 import 'tournament_repository.dart';
@@ -64,10 +65,6 @@ class _HomeScreenState extends State<HomeScreen> {
     TournamentSyncState.localOnly,
     'Saved locally',
   );
-  StreamSubscription<Map<String, List<TatamiLogEntry>>>?
-  _tatamiLogsSubscription;
-  Map<String, List<TatamiLogEntry>> _tatamiLogsByTatami =
-      const <String, List<TatamiLogEntry>>{};
   bool _tatamiNamesLoaded = false;
   bool _competitorsLoaded = false;
   bool _divisionsLoaded = false;
@@ -75,11 +72,13 @@ class _HomeScreenState extends State<HomeScreen> {
   bool _repositoryReady = false;
   bool _subscriptionsAttached = false;
   bool _isSavingDrawSheets = false;
+  bool _isRestoringBackup = false;
   bool _isDeletingTournament = false;
   String? _streamError;
 
   bool get _isLoading =>
       _isDeletingTournament ||
+      _isRestoringBackup ||
       !_repositoryReady ||
       (!_tatamiNamesLoaded ||
           !_competitorsLoaded ||
@@ -145,14 +144,6 @@ class _HomeScreenState extends State<HomeScreen> {
       }
       setState(() {
         _tatamiLoaded = true;
-      });
-    }, onError: _handleStreamError);
-    _tatamiLogsSubscription = _repository.watchTatamiLogs().listen((logs) {
-      if (!mounted) {
-        return;
-      }
-      setState(() {
-        _tatamiLogsByTatami = logs;
       });
     }, onError: _handleStreamError);
     _syncStatusSubscription = _repository.watchSyncStatus().listen((status) {
@@ -264,19 +255,10 @@ class _HomeScreenState extends State<HomeScreen> {
       _isSavingDrawSheets = true;
     });
     try {
-      if (_divisions.isEmpty) {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('No divisions are available to export.'),
-            ),
-          );
-        }
-        return;
-      }
+      final backup = _repository.captureBackup();
 
       if (kIsWeb) {
-        await _saveDataForWeb();
+        await _saveDataForWeb(backup);
         return;
       }
 
@@ -289,15 +271,18 @@ class _HomeScreenState extends State<HomeScreen> {
 
       final exportedImages = await _exportDrawSheetImagesToFolder(
         selectedFolder,
+        backup,
       );
-      await _exportDivisionLogsXlsxToFolder(selectedFolder);
+      await _exportDivisionLogsXlsxToFolder(selectedFolder, backup);
+      await File('$selectedFolder${Platform.pathSeparator}tournament_backup.json')
+          .writeAsBytes(backup.encode(), flush: true);
       if (!mounted) {
         return;
       }
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
-            'Saved $exportedImages draw-sheet images and division_logs.xlsx.',
+            'Saved $exportedImages draw sheets, division logs, and tournament backup.',
           ),
         ),
       );
@@ -317,16 +302,15 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  Future<void> _saveDataForWeb() async {
-    final images = await _captureDrawSheetImages();
-    if (images.isEmpty) {
-      return;
-    }
+  Future<void> _saveDataForWeb(TournamentBackup backup) async {
+    final images = await _captureDrawSheetImages(backup);
+    if (!mounted) return;
 
-    final processLogBytes = _buildDivisionLogsXlsxBytes();
+    final processLogBytes = _buildDivisionLogsXlsxBytes(backup);
     final filesForArchive = <String, Uint8List>{
       ...images,
       'division_logs.xlsx': processLogBytes,
+      'tournament_backup.json': backup.encode(),
     };
 
     final zipBytes = await compute(
@@ -341,24 +325,74 @@ class _HomeScreenState extends State<HomeScreen> {
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('Draw-sheet images + division logs ZIP downloaded.'),
+          content: Text('Draw sheets, division logs, and backup ZIP downloaded.'),
         ),
       );
     }
   }
 
-  Uint8List _buildDivisionLogsXlsxBytes() {
+  Uint8List _buildDivisionLogsXlsxBytes(TournamentBackup backup) {
     final bytes = encodeDivisionProcessLogWorkbook(
-      divisions: _divisions,
-      tatamiLogsByTatami: _tatamiLogsByTatami,
+      divisions: backup.divisions,
+      tatamiLogsByTatami: backup.tatamiLogs,
     );
     return Uint8List.fromList(bytes);
   }
 
-  Future<void> _exportDivisionLogsXlsxToFolder(String folderPath) async {
+  Future<void> _exportDivisionLogsXlsxToFolder(
+    String folderPath, TournamentBackup backup,
+  ) async {
     final file = File('$folderPath${Platform.pathSeparator}division_logs.xlsx');
     await file.parent.create(recursive: true);
-    await file.writeAsBytes(_buildDivisionLogsXlsxBytes(), flush: true);
+    await file.writeAsBytes(_buildDivisionLogsXlsxBytes(backup), flush: true);
+  }
+
+  Future<void> _restoreBackup() async {
+    if (_isLoading || _isSavingDrawSheets) return;
+    setState(() => _isRestoringBackup = true);
+    try {
+      final file = await openFile(acceptedTypeGroups: const [
+        XTypeGroup(label: 'Tournament backup', extensions: ['json']),
+      ]);
+      if (file == null || !mounted) return;
+      if (await file.length() > 50 * 1024 * 1024) {
+        throw const FormatException('The backup exceeds the 50 MB size limit.');
+      }
+      final backup = TournamentBackup.decode(await file.readAsBytes());
+      if (!mounted) return;
+      final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('Restore tournament backup?'),
+          content: Text(
+            'Replace "${widget.tournamentId}" with the backup from '
+            '${backup.capturedAt.toLocal()}? '
+            'Started divisions cannot be changed by restore.',
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
+            FilledButton.icon(
+              onPressed: () => Navigator.pop(context, true),
+              icon: const Icon(Icons.restore), label: const Text('Restore'),
+            ),
+          ],
+        ),
+      );
+      if (confirmed != true || !mounted) return;
+      await _repository.restoreBackup(backup);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Backup restored locally; synchronization queued.')),
+      );
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Unable to restore backup: $error')),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _isRestoringBackup = false);
+    }
   }
 
   Future<void> _closeApp() async {
@@ -505,9 +539,11 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  Future<int> _exportDrawSheetImagesToFolder(String folderPath) async {
-    final images = await _captureDrawSheetImages();
-    for (final tatamiFolder in _tatamiFolderNames) {
+  Future<int> _exportDrawSheetImagesToFolder(
+    String folderPath, TournamentBackup backup,
+  ) async {
+    final images = await _captureDrawSheetImages(backup);
+    for (final tatamiFolder in _tatamiFolderNames(backup)) {
       await Directory('$folderPath${Platform.pathSeparator}$tatamiFolder')
           .create(recursive: true);
     }
@@ -520,12 +556,12 @@ class _HomeScreenState extends State<HomeScreen> {
     return images.length;
   }
 
-  List<String> get _tatamiFolderNames {
+  List<String> _tatamiFolderNames(TournamentBackup backup) {
     final folders = <String>{
-      ..._tatamiDefinitions.map(
+      ...backup.tatamiDefinitions.map(
         (definition) => _safeTatamiFolderName(definition.name),
       ),
-      ..._divisions.map(
+      ...backup.divisions.map(
         (division) => _safeTatamiFolderName(division.assignedTatamiName),
       ),
     };
@@ -537,16 +573,18 @@ class _HomeScreenState extends State<HomeScreen> {
     return safeName.isEmpty ? 'Unassigned Tatami' : safeName;
   }
 
-  Future<Map<String, Uint8List>> _captureDrawSheetImages() async {
+  Future<Map<String, Uint8List>> _captureDrawSheetImages(TournamentBackup backup) async {
     final images = <String, Uint8List>{};
-    if (_divisions.isEmpty) {
+    final divisions = backup.divisions;
+    final competitors = backup.competitors;
+    if (divisions.isEmpty) {
       return images;
     }
 
     final screenshotController = ScreenshotController();
-    for (final division in _divisions) {
+    for (final division in divisions) {
       if (!mounted) {
-        return images;
+        throw StateError('Export cancelled.');
       }
       final imageBytes = await screenshotController.captureFromWidget(
         Theme(
@@ -559,7 +597,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 width: 1320,
                 child: DrawSheetContent(
                   division: division,
-                  competitors: _competitors,
+                  competitors: competitors,
                   printFriendly: true,
                 ),
               ),
@@ -589,7 +627,6 @@ class _HomeScreenState extends State<HomeScreen> {
     _competitorsSubscription?.cancel();
     _divisionsSubscription?.cancel();
     _tatamiSubscription?.cancel();
-    _tatamiLogsSubscription?.cancel();
     _syncStatusSubscription?.cancel();
     unawaited(_repository.dispose());
     super.dispose();
@@ -673,6 +710,7 @@ class _HomeScreenState extends State<HomeScreen> {
                       MaterialPageRoute(
                         builder: (context) => TatamiScreen(
                           tournamentId: widget.tournamentId,
+                          onOpenExecution: _repository.openDivisionExecution,
                           watchTatamiDefinitions:
                               _repository.watchTatamiDefinitions,
                           watchDivisions: _repository.watchDivisions,
@@ -686,6 +724,10 @@ class _HomeScreenState extends State<HomeScreen> {
                           onUpdateJudgeCount: _updateTatamiJudgeCount,
                           onSaveExecutionState: _saveDivisionExecutionState,
                           onPublishLiveState: _publishLiveMatchState,
+                          onClearLiveState: (tatamiName, divisionId) =>
+                              _repository.clearLiveMatchState(
+                                tatamiName, divisionId: divisionId,
+                              ),
                           onSaveInProgressMatch:
                               _repository.saveDivisionInProgressMatch,
                         ),
@@ -741,6 +783,11 @@ class _HomeScreenState extends State<HomeScreen> {
         title: const Text('TISKA Tournament Manager'),
         actions: [
           if (widget.isAdmin) ...[
+            IconButton(
+              tooltip: 'Restore tournament backup',
+              onPressed: _isLoading || _isSavingDrawSheets ? null : _restoreBackup,
+              icon: const Icon(Icons.restore),
+            ),
             IconButton(
               tooltip: 'Set user password',
               onPressed: _isDeletingTournament ? null : _changeUserPassword,

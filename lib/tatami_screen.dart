@@ -7,9 +7,11 @@ import 'competition_results_screen.dart';
 import 'draw_sheet_screen.dart';
 import 'live_match_state.dart';
 import 'tournament_models.dart';
+import 'tournament_repository.dart';
 
 class TatamiScreen extends StatefulWidget {
   final String tournamentId;
+  final Future<DivisionExecutionSession> Function(String, String)? onOpenExecution;
   final Stream<List<TatamiDefinition>> Function() watchTatamiDefinitions;
   final Stream<List<Division>> Function() watchDivisions;
   final Stream<List<Competitor>> Function() watchCompetitors;
@@ -33,6 +35,7 @@ class TatamiScreen extends StatefulWidget {
   })
   onSaveExecutionState;
   final void Function(LiveMatchState state) onPublishLiveState;
+  final void Function(String tatamiName, String divisionId)? onClearLiveState;
   final Future<void> Function(
     String tatamiName,
     String divisionId,
@@ -43,6 +46,7 @@ class TatamiScreen extends StatefulWidget {
   const TatamiScreen({
     super.key,
     this.tournamentId = '',
+    this.onOpenExecution,
     required this.watchTatamiDefinitions,
     required this.watchDivisions,
     required this.watchCompetitors,
@@ -55,6 +59,7 @@ class TatamiScreen extends StatefulWidget {
     required this.onUpdateJudgeCount,
     required this.onSaveExecutionState,
     required this.onPublishLiveState,
+    this.onClearLiveState,
     required this.onSaveInProgressMatch,
   });
 
@@ -439,11 +444,13 @@ class _TatamiScreenState extends State<TatamiScreen> {
           division: division,
           competitors: _divisionCompetitors(division),
           judgesCount: _selectedTatamiDefinition.judgesCount,
+          onOpenExecution: widget.onOpenExecution,
           onJudgeCountChanged: widget.onUpdateJudgeCount,
           onStartDivision: widget.onStartDivision,
           onCompleteDivision: widget.onCompleteDivision,
           onSaveExecutionState: widget.onSaveExecutionState,
           onPublishLiveState: widget.onPublishLiveState,
+          onClearLiveState: widget.onClearLiveState,
           onSaveInProgressMatch: widget.onSaveInProgressMatch,
         ),
       ),
