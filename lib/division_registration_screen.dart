@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import 'tournament_models.dart';
+import 'tournament_snapshot_merge.dart';
 
 class DivisionRegistrationScreen extends StatefulWidget {
   final List<Competitor> competitors;
@@ -43,6 +44,13 @@ class _DivisionRegistrationScreenState
   String? selectedTatamiName;
   String? editingDivisionId;
   final List<String> selectedCompetitorIds = <String>[];
+  final List<DivisionTeam> _teams = [];
+  final Map<String, String> _teamQueries = {};
+  bool get _isTeamCategory => selectedCategory?.template == CompetitionTemplate.flagTeams;
+  bool get _rosterLocked => editingDivision != null && divisionHasResults(editingDivision!);
+  TeamRules get _teamRules => editingDivision?.categoryId == selectedCategoryId
+      ? editingDivision!.teamRules : selectedCategory?.teamRules ?? const TeamRules();
+  List<String> get _teamMemberIds => _teams.expand((team) => team.memberIds).toSet().toList();
   bool isSubmitting = false;
 
   bool get isEditing => editingDivisionId != null;
@@ -120,7 +128,7 @@ class _DivisionRegistrationScreenState
     final competitorById = <String, Competitor>{
       for (final competitor in widget.competitors) competitor.id: competitor,
     };
-    return selectedCompetitorIds
+    return (_isTeamCategory ? _teamMemberIds : selectedCompetitorIds)
         .map((id) => competitorById[id])
         .whereType<Competitor>()
         .toList();
@@ -204,6 +212,8 @@ class _DivisionRegistrationScreenState
       competitionCategoryId: category.id,
       competitionCategoryName: category.name,
       competitionTemplate: category.template,
+      teams: _isTeamCategory ? List.of(_teams) : [],
+      teamRules: _teamRules,
       minBeltRank: criteria.minBeltRank,
       maxBeltRank: criteria.maxBeltRank,
       minAge: criteria.minAge,
@@ -211,7 +221,7 @@ class _DivisionRegistrationScreenState
       gender: criteria.gender,
       assignedTatamiName: selectedTatamiName!,
       createdAt: editingDivision?.createdAt ?? 0,
-      competitorIds: const <String>[],
+      competitorIds: _isTeamCategory ? _teamMemberIds : const <String>[],
     );
   }
 
@@ -245,12 +255,15 @@ class _DivisionRegistrationScreenState
       _showMessage('Add competitors to construct a division range.');
       return;
     }
-    if (selectedCompetitorIds.length < 2) {
-      _showMessage('Add at least two competitors to create a division.');
+    final entrantCount = _isTeamCategory ? _teams.length : selectedCompetitorIds.length;
+    if (entrantCount < 2) {
+      _showMessage(_isTeamCategory ? 'Add at least two teams to create a division.'
+          : 'Add at least two competitors to create a division.');
       return;
     }
-    if (selectedCompetitorIds.length > 16) {
-      _showMessage('A division can contain at most 16 competitors.');
+    if (entrantCount > 16) {
+      _showMessage(_isTeamCategory ? 'A division can contain at most 16 teams.'
+          : 'A division can contain at most 16 competitors.');
       return;
     }
 
@@ -261,6 +274,9 @@ class _DivisionRegistrationScreenState
     });
 
     try {
+      if (_isTeamCategory) {
+        validateTeamRosters(previewDivision!, widget.competitors.map((item) => item.id).toSet());
+      }
       await widget.onSave(
         Division(
           id:
@@ -270,6 +286,8 @@ class _DivisionRegistrationScreenState
           competitionCategoryId: category.id,
           competitionCategoryName: category.name,
           competitionTemplate: category.template,
+          teams: _isTeamCategory ? List.of(_teams) : [],
+          teamRules: _isTeamCategory ? _teamRules : const TeamRules(),
           minBeltRank: criteria.minBeltRank,
           maxBeltRank: criteria.maxBeltRank,
           minAge: criteria.minAge,
@@ -279,7 +297,7 @@ class _DivisionRegistrationScreenState
           createdAt:
               currentEditingDivision?.createdAt ??
               DateTime.now().millisecondsSinceEpoch,
-          competitorIds: selectedCompetitorIds.toList(),
+          competitorIds: _isTeamCategory ? _teamMemberIds : selectedCompetitorIds.toList(),
           progress: currentEditingDivision?.progress ?? DivisionProgress.queued,
           startedAt: currentEditingDivision?.startedAt,
           completedAt: currentEditingDivision?.completedAt,
@@ -318,6 +336,8 @@ class _DivisionRegistrationScreenState
       editingDivisionId = division.id;
       selectedCategoryId = division.categoryId;
       selectedTatamiName = division.assignedTatamiName;
+      _teams..clear()..addAll(division.teams);
+      _teamQueries.clear();
       selectedCompetitorIds
         ..clear()
         ..addAll(
@@ -336,6 +356,8 @@ class _DivisionRegistrationScreenState
         ? null
         : widget.tatamiNames.first;
     selectedCompetitorIds.clear();
+    _teams.clear();
+    _teamQueries.clear();
     competitorNumberController.clear();
   }
 
@@ -383,6 +405,137 @@ class _DivisionRegistrationScreenState
         suggestions.map((competitor) => competitor.id),
       );
     });
+  }
+
+  void _addTeam() {
+    if (_rosterLocked || _teams.length >= 16) return;
+    var number = 1;
+    for (final team in _teams) {
+      if (team.number >= number) number = team.number + 1;
+    }
+    setState(() => _teams.add(DivisionTeam(
+      id: 'team-${DateTime.now().microsecondsSinceEpoch}', number: number, memberIds: [],
+    )));
+  }
+
+  void _updateTeam(DivisionTeam updated) {
+    if (_rosterLocked || isSubmitting) return;
+    setState(() {
+      final index = _teams.indexWhere((team) => team.id == updated.id);
+      if (index != -1) {
+        if (_teams[index].memberIds.length != updated.memberIds.length) _teamQueries[updated.id] = '';
+        _teams[index] = updated;
+      }
+    });
+  }
+
+  void _addMember(DivisionTeam team, Competitor competitor) {
+    if (team.memberIds.contains(competitor.id)) return;
+    if (_teamRules.maximumMembers != null && team.memberIds.length >= _teamRules.maximumMembers!) {
+      _showMessage('Team ${team.number} has reached its member limit.');
+      return;
+    }
+    if (!_teamRules.allowSharedMembers && _teams.any((other) =>
+        other.id != team.id && other.memberIds.contains(competitor.id))) {
+      _showMessage('This competitor already belongs to another team.');
+      return;
+    }
+    _teamQueries[team.id] = '';
+    _updateTeam(team.copyWith(memberIds: [...team.memberIds, competitor.id]));
+  }
+
+  void _moveTeam(int index, int offset) {
+    if (_rosterLocked || isSubmitting) return;
+    setState(() {
+      final team = _teams.removeAt(index);
+      _teams.insert(index + offset, team);
+    });
+  }
+
+  Widget _buildTeams() {
+    final byId = {for (final competitor in widget.competitors) competitor.id: competitor};
+    final disabled = isSubmitting || _rosterLocked;
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      Text('Teams (${_teams.length})', style: Theme.of(context).textTheme.titleMedium),
+      Text('Members per team: ${_teamRules.minimumMembers}-${_teamRules.maximumMembers ?? 'None'}'),
+      if (_rosterLocked) const Text('Redo the division before changing team rosters.'),
+      const SizedBox(height: 8),
+      OutlinedButton.icon(key: const ValueKey('add-division-team'),
+        onPressed: disabled || _teams.length >= 16 ? null : _addTeam,
+        icon: const Icon(Icons.group_add_outlined), label: const Text('Add Team')),
+      for (var index = 0; index < _teams.length; index++)
+        Builder(builder: (context) {
+          final team = _teams[index];
+          final query = (_teamQueries[team.id] ?? '').trim().toLowerCase();
+          final choices = widget.competitors.where((competitor) =>
+            !team.memberIds.contains(competitor.id) &&
+            (competitor.number.toLowerCase().contains(query) || competitor.name.toLowerCase().contains(query)) &&
+            (_teamRules.allowSharedMembers || !_teamMemberIds.contains(competitor.id))).take(8).toList();
+          final invalidSize = team.memberIds.length < _teamRules.minimumMembers ||
+              (_teamRules.maximumMembers != null && team.memberIds.length > _teamRules.maximumMembers!);
+          return ExpansionTile(
+            key: ValueKey('team-editor-${team.id}'), initiallyExpanded: true,
+            tilePadding: EdgeInsets.zero, childrenPadding: const EdgeInsets.only(bottom: 16),
+            title: Text('Team ${team.number}${team.name?.isNotEmpty ?? false ? ' - ${team.name}' : ''}',
+              maxLines: 1, overflow: TextOverflow.ellipsis),
+            subtitle: Text('${team.memberIds.length} members'),
+            children: [
+              Row(children: [
+                IconButton(tooltip: 'Move Team ${team.number} Up', icon: const Icon(Icons.arrow_upward),
+                  onPressed: disabled || index == 0 ? null : () => _moveTeam(index, -1)),
+                IconButton(tooltip: 'Move Team ${team.number} Down', icon: const Icon(Icons.arrow_downward),
+                  onPressed: disabled || index == _teams.length - 1 ? null : () => _moveTeam(index, 1)),
+                const Spacer(),
+                IconButton(tooltip: 'Remove Team ${team.number}', icon: const Icon(Icons.delete_outline),
+                  onPressed: disabled ? null : () => setState(() => _teams.removeAt(index))),
+              ]),
+              if (_teamRules.allowNames) TextFormField(
+                key: ValueKey('team-name-${team.id}'), initialValue: team.name,
+                enabled: !disabled, maxLength: 80, decoration: const InputDecoration(labelText: 'Team Name (Optional)'),
+                onChanged: (name) => _updateTeam(team.copyWith(name: name.trim())),
+              ),
+              if (!_teamRules.allowNames && (team.name?.isNotEmpty ?? false))
+                InputChip(label: Text('Name: ${team.name}'),
+                  onDeleted: disabled ? null : () => _updateTeam(team.copyWith(name: ''))),
+              Align(alignment: Alignment.centerLeft, child: Wrap(spacing: 8, runSpacing: 4, children: [
+                for (final id in team.memberIds) InputChip(
+                  label: Text(byId[id] == null ? 'Missing competitor: $id' : '${byId[id]!.number} - ${byId[id]!.name}'),
+                  onDeleted: disabled ? null : () => _updateTeam(team.copyWith(
+                    memberIds: team.memberIds.where((member) => member != id).toList())),
+                ),
+              ])),
+              if (invalidSize) Align(alignment: Alignment.centerLeft, child: Text(
+                'Roster must contain ${_teamRules.minimumMembers}-${_teamRules.maximumMembers ?? 'any number of'} members.',
+                style: TextStyle(color: Theme.of(context).colorScheme.error),
+              )),
+              const SizedBox(height: 8),
+              TextFormField(key: ValueKey('team-search-${team.number}-${team.memberIds.length}'),
+                enabled: !disabled, initialValue: '',
+                decoration: const InputDecoration(labelText: 'Member Number or Name', prefixIcon: Icon(Icons.person_search_outlined)),
+                onChanged: (value) => setState(() => _teamQueries[team.id] = value),
+                onFieldSubmitted: (_) {
+                  final exact = choices.where((item) => item.number.toLowerCase() == query).firstOrNull;
+                  if (exact != null) {
+                    _addMember(team, exact);
+                  } else if (choices.length == 1) {
+                    _addMember(team, choices.single);
+                  }
+                },
+              ),
+              if (query.isNotEmpty && !disabled) ...[
+                if (choices.isEmpty) const Text('No available competitors match.'),
+                for (final competitor in choices) ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: Text('${competitor.number} - ${competitor.name}'),
+                  subtitle: competitor.club.isEmpty ? null : Text(competitor.club),
+                  trailing: IconButton(tooltip: 'Add ${competitor.number} to Team ${team.number}',
+                    icon: const Icon(Icons.person_add_outlined), onPressed: () => _addMember(team, competitor)),
+                ),
+              ],
+            ],
+          );
+        }),
+    ]);
   }
 
   void _showMessage(String message) {
@@ -495,12 +648,21 @@ class _DivisionRegistrationScreenState
                                       : (value) {
                                           if (value != null) {
                                             setState(() {
+                                              final wasTeam = _isTeamCategory;
                                               selectedCategoryId = value;
+                                              if (wasTeam && !_isTeamCategory) {
+                                                selectedCompetitorIds..clear()..addAll(_teamMemberIds);
+                                              } else if (!wasTeam && _isTeamCategory && _teams.isEmpty && selectedCompetitorIds.isNotEmpty) {
+                                                _teams.add(DivisionTeam(id: 'team-${DateTime.now().microsecondsSinceEpoch}',
+                                                  number: 1, memberIds: List.of(selectedCompetitorIds)));
+                                              }
                                             });
                                           }
                                         },
                                 ),
                                 const SizedBox(height: 12),
+                                if (_isTeamCategory) _buildTeams(),
+                                if (!_isTeamCategory) ...[
                                 Row(
                                   children: [
                                     Expanded(
@@ -542,6 +704,7 @@ class _DivisionRegistrationScreenState
                                     ),
                                   ),
                                 ],
+                                ],
                                 const SizedBox(height: 12),
                                 DropdownButtonFormField<String>(
                                   initialValue: tatamiDropdownValue,
@@ -577,6 +740,7 @@ class _DivisionRegistrationScreenState
                                   ),
                                 ],
                                 const SizedBox(height: 16),
+                                if (!_isTeamCategory) ...[
                                 Text(
                                   'Draw sheet order (${selected.length})',
                                   style: Theme.of(context)
@@ -661,8 +825,12 @@ class _DivisionRegistrationScreenState
                                       );
                                     },
                                   ),
+                                ],
                                 const SizedBox(height: 16),
-                                Row(
+                                Wrap(
+                                  spacing: 12,
+                                  runSpacing: 8,
+                                  crossAxisAlignment: WrapCrossAlignment.center,
                                   children: [
                                     ElevatedButton(
                                       onPressed: isSubmitting
@@ -674,7 +842,6 @@ class _DivisionRegistrationScreenState
                                             : 'Add Division',
                                       ),
                                     ),
-                                    const SizedBox(width: 12),
                                     TextButton(
                                       onPressed: isEditing && !isSubmitting
                                           ? () => setState(_resetForm)
@@ -688,6 +855,7 @@ class _DivisionRegistrationScreenState
                           ),
                         ),
                         const SizedBox(height: 16),
+                        if (!_isTeamCategory)
                         Card(
                           child: Padding(
                             padding: const EdgeInsets.all(16),
@@ -779,7 +947,7 @@ class _DivisionRegistrationScreenState
                                 title: Text(division.title),
                                 subtitle: Text(
                                   'Assigned Tatami: ${division.assignedTatamiName}\n'
-                                  '${division.ageRangeLabel} | Competitors ${division.competitorIds.length}',
+                                  '${division.ageRangeLabel} | ${division.isTeamDivision ? 'Teams ${division.teams.length}' : 'Competitors ${division.competitorIds.length}'}',
                                 ),
                                 onTap: isSubmitting
                                     ? null

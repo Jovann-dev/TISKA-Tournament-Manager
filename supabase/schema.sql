@@ -48,6 +48,10 @@ declare
   category_row jsonb;
   category_id text;
   category_template text;
+  rules jsonb;
+  team_row jsonb;
+  minimum_members numeric;
+  maximum_members numeric;
 begin
   if tg_op = 'UPDATE' and new.revision <> old.revision + 1 then
     raise exception 'Revision-checked tournament writes are required';
@@ -72,7 +76,7 @@ begin
     loop
       if coalesce(trim(category_row->>'id'), '') = ''
         or coalesce(trim(category_row->>'name'), '') = ''
-        or coalesce(category_row->>'template', '') not in ('flagVoting', 'points')
+        or coalesce(category_row->>'template', '') not in ('flagVoting', 'points', 'flagTeams')
         or jsonb_typeof(category_row->'enabled') is distinct from 'boolean' then
         raise exception 'Invalid competition category';
       end if;
@@ -91,6 +95,31 @@ begin
       end loop;
     end if;
   end if;
+
+  for rules in
+    select coalesce(nullif(item->'teamRules', 'null'::jsonb), '{}'::jsonb)
+      from jsonb_array_elements(coalesce(new.snapshot->'competitionCategories', '[]')) as item
+    union all
+    select coalesce(nullif(item->'data'->'teamRules', 'null'::jsonb), '{}'::jsonb)
+      from jsonb_array_elements(coalesce(new.snapshot->'divisions', '[]')) as item
+      where item->'data'->>'competitionTemplate' = 'flagTeams'
+  loop
+    if jsonb_typeof(rules) <> 'object'
+      or (rules ? 'minimumMembers' and jsonb_typeof(rules->'minimumMembers') <> 'number')
+      or (rules->'maximumMembers' is not null and rules->'maximumMembers' <> 'null'::jsonb
+        and jsonb_typeof(rules->'maximumMembers') <> 'number')
+      or (rules ? 'allowSharedMembers' and jsonb_typeof(rules->'allowSharedMembers') <> 'boolean')
+      or (rules ? 'allowNames' and jsonb_typeof(rules->'allowNames') <> 'boolean') then
+      raise exception 'Invalid team rules';
+    end if;
+    minimum_members := coalesce((rules->>'minimumMembers')::numeric, 1);
+    maximum_members := (rules->>'maximumMembers')::numeric;
+    if minimum_members < 1 or minimum_members <> trunc(minimum_members)
+      or (maximum_members is not null and
+        (maximum_members < minimum_members or maximum_members <> trunc(maximum_members))) then
+      raise exception 'Invalid team size limits';
+    end if;
+  end loop;
 
   if exists (
     select 1 from jsonb_array_elements(coalesce(new.snapshot->'divisions', '[]')) as item
@@ -134,10 +163,67 @@ begin
         raise exception 'Division competition category or template does not match the catalog';
       end if;
     end if;
-    if jsonb_array_length(coalesce(current_data->'competitorIds', '[]')) not between 2 and 16
-      or (select count(distinct value) from jsonb_array_elements(current_data->'competitorIds'))
+    if current_data->>'competitionTemplate' = 'flagTeams' then
+      if jsonb_array_length(coalesce(current_data->'teams', '[]')) not between 2 and 16 then
+        raise exception 'Team divisions require 2-16 teams';
+      end if;
+      if exists (select 1 from jsonb_array_elements(current_data->'teams') as item
+          group by item->>'id' having count(*) > 1)
+        or exists (select 1 from jsonb_array_elements(current_data->'teams') as item
+          group by item->>'number' having count(*) > 1) then
+        raise exception 'Team IDs and numbers must be unique';
+      end if;
+      rules := coalesce(current_data->'teamRules', '{}'::jsonb);
+      minimum_members := coalesce((rules->>'minimumMembers')::numeric, 1);
+      maximum_members := (rules->>'maximumMembers')::numeric;
+      for team_row in select value from jsonb_array_elements(current_data->'teams')
+      loop
+        if coalesce(trim(team_row->>'id'), '') = ''
+          or jsonb_typeof(team_row->'number') is distinct from 'number'
+          or (team_row->>'number')::numeric < 1
+          or (team_row->>'number')::numeric <> trunc((team_row->>'number')::numeric)
+          or exists (select 1 from jsonb_array_elements(new.snapshot->'competitors') as item
+            where item->>'id' = team_row->>'id')
+          or jsonb_typeof(team_row->'memberIds') is distinct from 'array' then
+          raise exception 'Invalid team identifier, number or roster';
+        end if;
+        if jsonb_array_length(team_row->'memberIds') < minimum_members
+          or (maximum_members is not null and jsonb_array_length(team_row->'memberIds') > maximum_members)
+          or (select count(distinct value) from jsonb_array_elements(team_row->'memberIds'))
+            <> jsonb_array_length(team_row->'memberIds') then
+          raise exception 'Team roster violates its membership limits';
+        end if;
+        if (not coalesce((rules->>'allowNames')::boolean, false)
+            and coalesce(trim(team_row->>'name'), '') <> '')
+          or length(coalesce(team_row->>'name', '')) > 80 then
+          raise exception 'Team names are not allowed or exceed the length limit';
+        end if;
+      end loop;
+      if not coalesce((rules->>'allowSharedMembers')::boolean, true) and exists (
+        select 1 from jsonb_array_elements(current_data->'teams') as team
+          cross join lateral jsonb_array_elements(team->'memberIds') as member
+        group by member having count(*) > 1
+      ) then
+        raise exception 'Shared team membership is not allowed';
+      end if;
+      if exists (
+        select 1 from jsonb_array_elements(current_data->'teams') as team
+          cross join lateral jsonb_array_elements(team->'memberIds') as member
+        where not (current_data->'competitorIds' @> jsonb_build_array(member))
+      ) or exists (
+        select 1 from jsonb_array_elements(current_data->'competitorIds') as member
+        where not exists (select 1 from jsonb_array_elements(current_data->'teams') as team
+          where team->'memberIds' @> jsonb_build_array(member))
+      ) then
+        raise exception 'Team rosters must match division registrations';
+      end if;
+    elsif jsonb_array_length(coalesce(current_data->'competitorIds', '[]')) not between 2 and 16
+      or jsonb_array_length(coalesce(current_data->'teams', '[]')) <> 0 then
+      raise exception 'Individual divisions require 2-16 competitors and no teams';
+    end if;
+    if (select count(distinct value) from jsonb_array_elements(current_data->'competitorIds'))
         <> jsonb_array_length(current_data->'competitorIds') then
-      raise exception 'Divisions require 2-16 unique competitors';
+      raise exception 'Division registrations must be unique';
     end if;
     if not exists (
       select 1 from jsonb_array_elements(coalesce(new.snapshot->'tatamiDefinitions', '[]')) as item
@@ -194,10 +280,10 @@ begin
         raise exception 'Redo must clear all results and unfinished match state';
       end if;
       if (select jsonb_object_agg(key, value) from jsonb_each(previous_data)
-          where key in ('competitorIds','competitionType','competitionCategoryId','competitionCategoryName','competitionTemplate','minAge','maxAge','minBeltRank','maxBeltRank','gender'))
+          where key in ('competitorIds','competitionType','competitionCategoryId','competitionCategoryName','competitionTemplate','teams','teamRules','minAge','maxAge','minBeltRank','maxBeltRank','gender'))
         is distinct from
         (select jsonb_object_agg(key, value) from jsonb_each(current_data)
-          where key in ('competitorIds','competitionType','competitionCategoryId','competitionCategoryName','competitionTemplate','minAge','maxAge','minBeltRank','maxBeltRank','gender')) then
+          where key in ('competitorIds','competitionType','competitionCategoryId','competitionCategoryName','competitionTemplate','teams','teamRules','minAge','maxAge','minBeltRank','maxBeltRank','gender')) then
         raise exception 'Redo the division before changing its bracket';
       end if;
       for participant in select value from jsonb_array_elements(previous_data->'competitorIds')

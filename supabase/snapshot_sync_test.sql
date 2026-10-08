@@ -117,4 +117,81 @@ begin
 end;
 $$;
 
+do $$
+declare
+  tournament_id text := '__team_test_' || gen_random_uuid()::text;
+  snapshot jsonb := '{
+    "competitionCategories":[{"id":"team-kata","name":"Team Kata","template":"flagTeams","enabled":true}],
+    "competitors":[{"id":"c0","data":{"number":"0","name":"Member"}}],
+    "divisions":[{"id":"teams","data":{"competitionType":"kata","competitionCategoryId":"team-kata",
+      "competitionCategoryName":"Team Kata","competitionTemplate":"flagTeams","progress":"queued",
+      "assignedTatamiName":"Tatami 1","competitorIds":["c0"],
+      "teams":[{"id":"t1","number":1,"memberIds":["c0"]},{"id":"t2","number":2,"memberIds":["c0"]}],
+      "matchRecords":[],"placements":[]}}],
+    "tatamiDefinitions":[{"name":"Tatami 1","judgesCount":5}],"tatamiLogs":[]
+  }'::jsonb;
+  saved jsonb;
+  attempted jsonb;
+  rejected boolean;
+begin
+  saved := public.save_tournament_snapshot(tournament_id, 0, snapshot);
+  if (saved->>'revision')::bigint <> 1 then raise exception 'Default shared-member teams failed'; end if;
+  attempted := jsonb_set(saved, '{divisions,0,data,teamRules}', '{"allowSharedMembers":false}');
+  rejected := false;
+  begin
+    perform public.save_tournament_snapshot(tournament_id, 1, attempted);
+  exception when raise_exception then rejected := true;
+  end;
+  if not rejected then raise exception 'Forbidden shared membership was accepted'; end if;
+  attempted := jsonb_set(saved, '{divisions,0,data,teamRules}', '{"minimumMembers":2}');
+  rejected := false;
+  begin
+    perform public.save_tournament_snapshot(tournament_id, 1, attempted);
+  exception when raise_exception then rejected := true;
+  end;
+  if not rejected then raise exception 'Minimum team size was not enforced'; end if;
+  attempted := jsonb_set(saved, '{divisions,0,data,teams,0,name}', '"Not permitted"');
+  rejected := false;
+  begin
+    perform public.save_tournament_snapshot(tournament_id, 1, attempted);
+  exception when raise_exception then rejected := true;
+  end;
+  if not rejected then raise exception 'Default team naming rule was not enforced'; end if;
+  saved := public.save_tournament_snapshot(tournament_id, 1,
+    jsonb_set(saved, '{divisions,0,data,progress}', '"running"'));
+  rejected := false;
+  begin
+    perform public.save_tournament_snapshot(tournament_id, 2,
+      jsonb_set(saved, '{divisions,0,data,teams,0,number}', '3'));
+  exception when raise_exception then rejected := true;
+  end;
+  if not rejected then raise exception 'Started team rosters were not locked'; end if;
+  snapshot := jsonb_set(snapshot, '{competitors}', (
+    select jsonb_agg(jsonb_build_object('id', 'c' || member_index,
+      'data', jsonb_build_object('number', member_index::text, 'name', 'Member ' || member_index)))
+    from generate_series(0, 19) as member_index
+  ));
+  snapshot := jsonb_set(snapshot, '{divisions,0,data,competitorIds}', (
+    select jsonb_agg('c' || member_index) from generate_series(0, 19) as member_index
+  ));
+  snapshot := jsonb_set(snapshot, '{divisions,0,data,teams,0,memberIds}', (
+    select jsonb_agg('c' || member_index) from generate_series(0, 18) as member_index
+  ));
+  snapshot := jsonb_set(snapshot, '{divisions,0,data,teams,1,memberIds}', '["c19"]');
+  saved := public.save_tournament_snapshot(tournament_id || '_large', 0, snapshot);
+  if (saved->>'revision')::bigint <> 1 then raise exception 'Unlimited team size capped individuals'; end if;
+  rejected := false;
+  begin
+    perform public.save_tournament_snapshot(tournament_id || '_large', 1,
+      jsonb_set(saved, '{divisions,0,data,teamRules}', '{"maximumMembers":3}'));
+  exception when raise_exception then rejected := true;
+  end;
+  if not rejected then raise exception 'Maximum team size was not enforced'; end if;
+  attempted := jsonb_set(saved, '{divisions,0,data,teamRules}', '{"allowNames":true}');
+  attempted := jsonb_set(attempted, '{divisions,0,data,teams,0,name}', '"Falcons"');
+  saved := public.save_tournament_snapshot(tournament_id || '_large', 1, attempted);
+  if (saved->>'revision')::bigint <> 2 then raise exception 'Optional team names were not accepted'; end if;
+end;
+$$;
+
 rollback;

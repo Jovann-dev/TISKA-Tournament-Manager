@@ -53,6 +53,46 @@ the migration extends snapshot guards for category/template integrity without
 deleting tournament data. Template IDs are stable; adding future scoring engines
 requires extending the template implementation and its database validation.
 
+## Scoring and Placements
+
+All points-based warning symbols are selectable from the start. Warning
+severity and warning count are independent. The third warning in a period,
+and each later warning for that competitor, asks whether to disqualify them
+and award the match to their opponent. Continue Match retains the warning
+without ending the match. Reopening and Undo use the saved event history.
+
+Repechage qualifiers receive joint third place, not joint fourth. Older saved
+joint-fourth labels are displayed and exported as joint third. Short repechage
+finalist blocks are centered against their feeder matches in screen and print
+draw sheets.
+
+## Flag-Based Team Scoring
+
+Create a category using Flag-Based Team Scoring in the admin category screen.
+Its rules default to a minimum of one member, no maximum, permission for the
+same competitor to join multiple teams in one division, and no team names.
+Admins can change the minimum/maximum, shared-membership permission, and
+optional naming for a category. Existing divisions retain their saved rules.
+
+In Register Division, select the team category and add numbered teams. Search
+registered competitors by name or number to build each roster, optionally name
+teams if permitted, and use the arrow controls to change team draw order.
+The bracket accepts 2-16 teams, regardless of the total number of individuals.
+Teams use the existing flag-voting, advancement, result-reuse and repechage
+mechanisms. Opposing teams sharing members show a warning without blocking
+the match. Started rosters and rules are locked until an explicit Redo.
+
+Results list member names for teams of up to three people. Larger teams show a
+circled member count with a roster reference. The full Team Rosters panel is
+below repechage in the draw sheet, including its exported image. Backups and
+cross-device synchronization preserve team numbers, names, order, rules and
+rosters. Remove affected people from queued team rosters before deleting their
+registrations or replacing them through import.
+
+Run the updated `supabase/schema.sql` before deploying this version and close
+older clients. Team rule and roster validation is also enforced in PostgreSQL;
+the migration preserves existing individual tournament data.
+
 ## Competitor Spreadsheets
 
 Exports include `kiddies_belt_color` alongside the existing belt text. Imports

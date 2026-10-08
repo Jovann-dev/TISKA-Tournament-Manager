@@ -228,7 +228,8 @@ class TournamentRepository {
       if (restoredCategories.length != _competitionCategories.length ||
           _competitionCategories.any((current) => !restoredCategories.any((item) =>
               item.id == current.id && item.name == current.name &&
-              item.template == current.template && item.enabled == current.enabled))) {
+              item.template == current.template && item.enabled == current.enabled &&
+              item.teamRules == current.teamRules))) {
         throw StateError('Only admins can restore changes to competition categories.');
       }
     }
@@ -519,6 +520,9 @@ class TournamentRepository {
 
   Future<void> deleteCompetitor(String competitorId) async {
     _ensureCompetitorsUnlocked({competitorId});
+    if (_divisions.any((division) => division.isTeamDivision && division.competitorIds.contains(competitorId))) {
+      throw StateError('Remove this competitor from team rosters before deleting the registration.');
+    }
     if (_divisions.any(
       (division) =>
           division.competitorIds.contains(competitorId) &&
@@ -546,7 +550,7 @@ class TournamentRepository {
     _validateCompetitorReplacement(competitors);
     final replacementIds = competitors.map((item) => item.id).toSet();
     for (final division in _divisions) {
-      if (division.competitorIds.where(replacementIds.contains).length < 2) {
+      if (!division.isTeamDivision && division.competitorIds.where(replacementIds.contains).length < 2) {
         throw StateError(
           'Import would leave "${division.title}" with fewer than two competitors.',
         );
@@ -887,6 +891,9 @@ class TournamentRepository {
     final index = _divisions.indexWhere((item) => item.id == division.id);
     if (index != -1) {
       previousDivision = _divisions[index];
+      if (!isAdmin && previousDivision.teamRules != division.teamRules) {
+        throw StateError('Only admins can change saved team rules.');
+      }
       if (divisionHasResults(previousDivision) &&
           !sameDivisionBracket(previousDivision, division)) {
         throw StateError(
@@ -1156,6 +1163,9 @@ class TournamentRepository {
     if (ids.length != replacements.length ||
         numbers.length != replacements.length) {
       throw StateError('Competitor IDs and numbers must be unique.');
+    }
+    if (_divisions.any((division) => division.isTeamDivision && !division.competitorIds.every(ids.contains))) {
+      throw StateError('Remove affected competitors from team rosters before replacing registrations.');
     }
     for (final previous in _competitors) {
       final matches = replacements.where((item) => item.id == previous.id);

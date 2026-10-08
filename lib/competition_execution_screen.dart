@@ -6,6 +6,7 @@ import 'competition_results_screen.dart';
 import 'live_match_state.dart';
 import 'tournament_models.dart';
 import 'tournament_repository.dart';
+import 'team_roster_widgets.dart';
 
 class CompetitionExecutionScreen extends StatefulWidget {
   final String tournamentId;
@@ -98,9 +99,7 @@ class _CompetitionExecutionScreenState
   void initState() {
     super.initState();
     _judgesCount = widget.judgesCount == 3 ? 3 : 5;
-    _planCompetitors = widget.competitors.length <= 16
-        ? List<Competitor>.from(widget.competitors)
-        : List<Competitor>.from(widget.competitors.take(16));
+    _planCompetitors = widget.division.bracketEntrants(widget.competitors).take(16).toList();
     _competitorsById = <String, Competitor>{
       for (final competitor in _planCompetitors) competitor.id: competitor,
     };
@@ -180,8 +179,9 @@ class _CompetitionExecutionScreenState
         if (!mounted) return;
         _executionSession = session;
         final current = session.division;
-        _planCompetitors = session.competitors;
-        if (_planCompetitors.length != current.competitorIds.length) {
+        _planCompetitors = current.bracketEntrants(session.competitors);
+        if (session.competitors.length != current.competitorIds.length ||
+          _planCompetitors.length != current.entrantIds.length) {
           throw StateError('Competitors changed. Reopen the competition floor.');
         }
         _competitorsById = {for (final item in _planCompetitors) item.id: item};
@@ -265,6 +265,21 @@ class _CompetitionExecutionScreenState
   }
 
   Division get _division => _executionSession?.division ?? widget.division;
+  List<Competitor> get _registeredCompetitors => _executionSession?.competitors ?? widget.competitors;
+
+  List<String> _sharedMembers(_ResolvedMatch match) {
+    if (!_division.isTeamDivision) return [];
+    final first = _division.teamById(match.competitorA.id)?.memberIds.toSet() ?? <String>{};
+    final second = _division.teamById(match.competitorB.id)?.memberIds.toSet() ?? <String>{};
+    final byId = {for (final item in _registeredCompetitors) item.id: item};
+    return first.intersection(second).map((id) => byId[id]?.name ?? id).toList();
+  }
+
+  void _showTeamRoster() {
+    Navigator.push(context, MaterialPageRoute(builder: (context) => TeamRosterPage(
+      division: _division, competitors: _registeredCompetitors,
+    )));
+  }
 
   bool get _isJiyuKumite => _division.scoringTemplate == CompetitionTemplate.points;
 
@@ -639,13 +654,6 @@ class _CompetitionExecutionScreenState
     );
   }
 
-  int _nextWarningStage(int currentStage) {
-    if (currentStage < 3) {
-      return currentStage + 1;
-    }
-    return 3;
-  }
-
   void _undoLastJiyuEvent() {
     final currentMatch = _currentMatch;
     if (currentMatch == null) {
@@ -679,9 +687,13 @@ class _CompetitionExecutionScreenState
         } else if (event.kind == KumiteEventKind.warning) {
           final stage = (event.warningStage?.index ?? -1) + 1;
           if (isCompetitorA) {
-            _jiyuAWarningStage = stage;
+            if (stage > _jiyuAWarningStage) {
+              _jiyuAWarningStage = stage;
+            }
           } else {
-            _jiyuBWarningStage = stage;
+            if (stage > _jiyuBWarningStage) {
+              _jiyuBWarningStage = stage;
+            }
           }
         }
       }
@@ -694,9 +706,10 @@ class _CompetitionExecutionScreenState
     Competitor competitor,
     KumiteEventKind kind, {
     KumiteWarningType? warningType,
+    KumiteWarningStage? warningStage,
   }) {
     final currentMatch = _currentMatch;
-    if (currentMatch == null || !_isJiyuKumite) {
+    if (currentMatch == null || !_isJiyuKumite || _isSubmitting) {
       return;
     }
 
@@ -737,20 +750,23 @@ class _CompetitionExecutionScreenState
           );
           break;
         case KumiteEventKind.warning:
-          final stage = isCompetitorA
-              ? _nextWarningStage(_jiyuAWarningStage)
-              : _nextWarningStage(_jiyuBWarningStage);
+          final selectedStage = warningStage ?? KumiteWarningStage.first;
+          final stage = selectedStage.index + 1;
           if (isCompetitorA) {
-            _jiyuAWarningStage = stage;
+            if (stage > _jiyuAWarningStage) {
+              _jiyuAWarningStage = stage;
+            }
           } else {
-            _jiyuBWarningStage = stage;
+            if (stage > _jiyuBWarningStage) {
+              _jiyuBWarningStage = stage;
+            }
           }
           _jiyuEvents.add(
             DivisionMatchEventRecord(
               competitorId: competitor.id,
               kind: kind,
               warningType: warningType,
-              warningStage: KumiteWarningStage.values[stage - 1],
+              warningStage: selectedStage,
               timestamp: timestamp,
               period: _jiyuPeriod,
             ),
@@ -771,16 +787,18 @@ class _CompetitionExecutionScreenState
     _publishLiveState();
     _persistInProgressMatch();
 
-    final winnerByWarning = _jiyuAWarningStage >= 3
-        ? currentMatch.competitorB
-        : _jiyuBWarningStage >= 3
-        ? currentMatch.competitorA
-        : null;
+    final warningCount = _jiyuEvents.where((event) =>
+        event.period == _jiyuPeriod && event.kind == KumiteEventKind.warning &&
+        event.competitorId == competitor.id).length;
+    if (kind == KumiteEventKind.warning && warningCount >= 3) {
+      unawaited(_confirmWarningDisqualification(currentMatch, competitor, warningCount));
+      return;
+    }
     final winnerByShikaku = kind == KumiteEventKind.shikaku
         ? (isCompetitorA ? currentMatch.competitorB : currentMatch.competitorA)
         : null;
 
-    final winner = winnerByWarning ?? winnerByShikaku;
+    final winner = winnerByShikaku;
     if (winner != null) {
       final loser = winner.id == currentMatch.competitorA.id
           ? currentMatch.competitorB
@@ -789,10 +807,39 @@ class _CompetitionExecutionScreenState
         currentMatch: currentMatch,
         winner: winner,
         loser: loser,
-        finishReason: winnerByWarning != null
-            ? KumiteFinishReason.warning
-            : KumiteFinishReason.shikaku,
+        finishReason: KumiteFinishReason.shikaku,
       );
+    }
+  }
+
+  Future<void> _confirmWarningDisqualification(
+    _ResolvedMatch match, Competitor warned, int warningCount,
+  ) async {
+    setState(() => _isSubmitting = true);
+    final opponent = warned.id == match.competitorA.id ? match.competitorB : match.competitorA;
+    try {
+      final disqualify = await showDialog<bool>(
+        context: context, barrierDismissible: false,
+        builder: (context) => AlertDialog(
+          title: const Text('Disqualify competitor?'),
+          content: Text('${warned.number} - ${warned.name} has $warningCount warnings in this period. '
+              'Disqualify this competitor and award the match to ${opponent.number} - ${opponent.name}?'),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Continue Match')),
+            FilledButton.icon(onPressed: () => Navigator.pop(context, true),
+              icon: const Icon(Icons.gavel_outlined), label: const Text('Disqualify')),
+          ],
+        ),
+      );
+      if (!mounted || _currentMatch?.match.id != match.match.id) return;
+      if (disqualify == true) {
+        await _completeJiyuMatch(currentMatch: match, winner: opponent, loser: warned,
+          finishReason: KumiteFinishReason.warning);
+      }
+    } catch (error) {
+      if (mounted) _showMessage('Unable to record disqualification: $error');
+    } finally {
+      if (mounted) setState(() => _isSubmitting = false);
     }
   }
 
@@ -1389,7 +1436,6 @@ class _CompetitionExecutionScreenState
     }
 
     final thirdPlaceIds = <String>[];
-    final fourthPlaceIds = <String>[];
     final seen = <String>{finalMatch.winner.id, finalMatch.loser.id};
 
     if (_planCompetitors.length > 4) {
@@ -1399,7 +1445,7 @@ class _CompetitionExecutionScreenState
           continue;
         }
         if (seen.add(competitor.id)) {
-          fourthPlaceIds.add(competitor.id);
+          thirdPlaceIds.add(competitor.id);
         }
       }
     } else {
@@ -1431,14 +1477,6 @@ class _CompetitionExecutionScreenState
               ? '3rd Place'
               : '3rd Place (Joint)',
           competitorIds: thirdPlaceIds,
-        ),
-      );
-    }
-    if (fourthPlaceIds.isNotEmpty) {
-      placements.add(
-        DivisionPlacement(
-          placeLabel: '4th Place (Joint)',
-          competitorIds: fourthPlaceIds,
         ),
       );
     }
@@ -1486,7 +1524,7 @@ class _CompetitionExecutionScreenState
       if (!mounted) {
         return;
       }
-      final completedDivision = widget.division.copyWith(
+      final completedDivision = _division.copyWith(
         progress: DivisionProgress.completed,
         completedAt: DateTime.now().millisecondsSinceEpoch,
         matchRecords: matchRecords,
@@ -1498,7 +1536,7 @@ class _CompetitionExecutionScreenState
           builder: (context) => CompetitionResultsScreen(
             tournamentId: widget.tournamentId,
             division: completedDivision,
-            competitors: widget.competitors,
+            competitors: _registeredCompetitors,
           ),
         ),
       );
@@ -1572,12 +1610,12 @@ class _CompetitionExecutionScreenState
               padding: const EdgeInsets.all(20),
               children: [
                 Text(
-                  widget.division.title,
+                  _division.title,
                   style: Theme.of(context).textTheme.headlineSmall,
                 ),
                 const SizedBox(height: 8),
                 Text(
-                  '${_division.competitionLabel} | ${_planCompetitors.length} competitors${widget.competitors.length > _planCompetitors.length ? ' (first ${_planCompetitors.length} used)' : ''}',
+                  '${_division.competitionLabel} | ${_planCompetitors.length} ${_division.isTeamDivision ? 'teams' : 'competitors'}',
                 ),
                 const SizedBox(height: 16),
                 Card(
@@ -1633,17 +1671,29 @@ class _CompetitionExecutionScreenState
                           ),
                           const SizedBox(height: 12),
                           Text(
-                            '${currentMatch.competitorA.number} - ${currentMatch.competitorA.name}',
+                            _division.isTeamDivision ? 'Team ${currentMatch.competitorA.number}'
+                                : '${currentMatch.competitorA.number} - ${currentMatch.competitorA.name}',
                             style: Theme.of(context).textTheme.titleMedium,
                           ),
                           const SizedBox(height: 4),
+                          if (_division.isTeamDivision) TeamMemberDetails(
+                            division: _division, teamId: currentMatch.competitorA.id,
+                            competitors: _registeredCompetitors, onViewRoster: _showTeamRoster),
                           Text(
-                            '${currentMatch.competitorB.number} - ${currentMatch.competitorB.name}',
+                            _division.isTeamDivision ? 'Team ${currentMatch.competitorB.number}'
+                                : '${currentMatch.competitorB.number} - ${currentMatch.competitorB.name}',
                             style: Theme.of(context).textTheme.titleMedium,
                           ),
                           const SizedBox(height: 16),
+                          if (_division.isTeamDivision) TeamMemberDetails(
+                            division: _division, teamId: currentMatch.competitorB.id,
+                            competitors: _registeredCompetitors, onViewRoster: _showTeamRoster),
+                          if (_sharedMembers(currentMatch).isNotEmpty)
+                            Text('Shared team members: ${_sharedMembers(currentMatch).join(', ')}',
+                              style: TextStyle(color: Theme.of(context).colorScheme.error)),
                           if (_isJiyuKumite)
                             _JiyuKumiteEditor(
+                              enabled: !_isSubmitting,
                               competitorA: currentMatch.competitorA,
                               competitorB: currentMatch.competitorB,
                               pointsA: _jiyuAPoints,
@@ -1669,15 +1719,17 @@ class _CompetitionExecutionScreenState
                                     ? KumiteEventKind.wazaAri
                                     : KumiteEventKind.ippon,
                               ),
-                              onWarningA: (warningType) => _recordJiyuEvent(
+                              onWarningA: (warningType, warningStage) => _recordJiyuEvent(
                                 currentMatch.competitorA,
                                 KumiteEventKind.warning,
                                 warningType: warningType,
+                                warningStage: warningStage,
                               ),
-                              onWarningB: (warningType) => _recordJiyuEvent(
+                              onWarningB: (warningType, warningStage) => _recordJiyuEvent(
                                 currentMatch.competitorB,
                                 KumiteEventKind.warning,
                                 warningType: warningType,
+                                warningStage: warningStage,
                               ),
                               onShikakuA: () => _recordJiyuEvent(
                                 currentMatch.competitorA,
@@ -1776,9 +1828,16 @@ class _CompetitionExecutionScreenState
                           ..._placements.map(
                             (placement) => Padding(
                               padding: const EdgeInsets.only(bottom: 10),
-                              child: Text(
-                                '${placement.placeLabel}: ${placement.competitors.map((competitor) => '${competitor.number} - ${competitor.name}').join(', ')}',
-                              ),
+                              child: _division.isTeamDivision
+                                  ? Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                                      Text(placement.placeLabel),
+                                      for (final team in placement.competitors) ...[
+                                        Text('Team ${team.number}'),
+                                        TeamMemberDetails(division: _division, teamId: team.id,
+                                          competitors: _registeredCompetitors, onViewRoster: _showTeamRoster),
+                                      ],
+                                    ])
+                                  : Text('${placement.placeLabel}: ${placement.competitors.map((competitor) => '${competitor.number} - ${competitor.name}').join(', ')}'),
                             ),
                           ),
                           const SizedBox(height: 12),
@@ -2035,6 +2094,7 @@ class _FlagVotingEditorState extends State<_FlagVotingEditor> {
 }
 
 class _JiyuKumiteEditor extends StatelessWidget {
+  final bool enabled;
   final Competitor competitorA;
   final Competitor competitorB;
   final int pointsA;
@@ -2048,8 +2108,8 @@ class _JiyuKumiteEditor extends StatelessWidget {
   final List<DivisionMatchEventRecord> events;
   final ValueChanged<int> onPointA;
   final ValueChanged<int> onPointB;
-  final ValueChanged<KumiteWarningType> onWarningA;
-  final ValueChanged<KumiteWarningType> onWarningB;
+  final void Function(KumiteWarningType, KumiteWarningStage) onWarningA;
+  final void Function(KumiteWarningType, KumiteWarningStage) onWarningB;
   final VoidCallback onShikakuA;
   final VoidCallback onShikakuB;
   final VoidCallback onStartOrContinueTimer;
@@ -2061,6 +2121,7 @@ class _JiyuKumiteEditor extends StatelessWidget {
   final VoidCallback onOvertime;
 
   const _JiyuKumiteEditor({
+    this.enabled = true,
     required this.competitorA,
     required this.competitorB,
     required this.pointsA,
@@ -2087,10 +2148,6 @@ class _JiyuKumiteEditor extends StatelessWidget {
     required this.onOvertime,
   });
 
-  bool _canWarn(int currentStage, int targetStage) {
-    return currentStage == targetStage - 1;
-  }
-
   /// Same chronological symbol sequence used in the draw sheet subscripts.
   String _symbolsFor(String competitorId) {
     return events
@@ -2105,7 +2162,7 @@ class _JiyuKumiteEditor extends StatelessWidget {
     required int points,
     required int warningStage,
     required ValueChanged<int> onPoint,
-    required ValueChanged<KumiteWarningType> onWarning,
+    required void Function(KumiteWarningType, KumiteWarningStage) onWarning,
     required VoidCallback onShikaku,
   }) {
     final stageLabels = <String>['Keikoku', 'Chui', 'Hansoku'];
@@ -2122,25 +2179,23 @@ class _JiyuKumiteEditor extends StatelessWidget {
     ];
 
     return Card(
+      key: ValueKey('points-editor-${competitor.id}'),
       child: Padding(
         padding: const EdgeInsets.all(12),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Row(
+            Text('${competitor.number} - ${competitor.name}',
+              style: Theme.of(context).textTheme.titleMedium),
+            const SizedBox(height: 4),
+            Wrap(
+              spacing: 12, runSpacing: 4,
               children: [
-                Expanded(
-                  child: Text(
-                    '${competitor.number} - ${competitor.name}',
-                    style: Theme.of(context).textTheme.titleMedium,
-                  ),
-                ),
                 Text('Points: $points'),
-                const SizedBox(width: 12),
                 Text(
                   warningStage == 0
                       ? 'Warnings: none'
-                      : 'Warnings: ${stageLabels[warningStage - 1]}',
+                      : 'Warnings: ${events.where((event) => event.competitorId == competitor.id && event.period == currentPeriod && event.kind == KumiteEventKind.warning).length} (${stageLabels[warningStage - 1]})',
                 ),
               ],
             ),
@@ -2150,11 +2205,11 @@ class _JiyuKumiteEditor extends StatelessWidget {
               runSpacing: 8,
               children: [
                 OutlinedButton(
-                  onPressed: () => onPoint(1),
+                  onPressed: enabled ? () => onPoint(1) : null,
                   child: const Text('Waza-ari'),
                 ),
                 ElevatedButton(
-                  onPressed: () => onPoint(2),
+                  onPressed: enabled ? () => onPoint(2) : null,
                   child: const Text('Ippon'),
                 ),
                 ...warningButtons.map((button) {
@@ -2162,13 +2217,11 @@ class _JiyuKumiteEditor extends StatelessWidget {
                   final type = button['type'] as KumiteWarningType;
                   final stage = button['stage'] as int;
                   return OutlinedButton(
-                    onPressed: _canWarn(warningStage, stage)
-                        ? () => onWarning(type)
-                        : null,
+                    onPressed: enabled ? () => onWarning(type, KumiteWarningStage.values[stage - 1]) : null,
                     child: Text(label),
                   );
                 }),
-                TextButton(onPressed: onShikaku, child: const Text('Shikaku')),
+                TextButton(onPressed: enabled ? onShikaku : null, child: const Text('Shikaku')),
               ],
             ),
             const SizedBox(height: 8),
@@ -2213,38 +2266,38 @@ class _JiyuKumiteEditor extends StatelessWidget {
                   runSpacing: 8,
                   children: [
                     ElevatedButton(
-                      onPressed: onStartOrContinueTimer,
+                      onPressed: enabled && !isTimerRunning ? onStartOrContinueTimer : null,
                       child: Text(
                         isTimerRunning ? 'Running...' : 'Start/Continue',
                       ),
                     ),
                     OutlinedButton(
-                      onPressed: isTimerRunning ? onPauseTimer : null,
+                      onPressed: enabled && isTimerRunning ? onPauseTimer : null,
                       child: const Text('Pause'),
                     ),
                     OutlinedButton(
-                      onPressed: onResetTimer,
+                      onPressed: enabled ? onResetTimer : null,
                       child: const Text('Reset Time'),
                     ),
                     OutlinedButton(
-                      onPressed: onResetScoreAndWarnings,
+                      onPressed: enabled ? onResetScoreAndWarnings : null,
                       child: const Text('Reset Score/Warnings'),
                     ),
                     OutlinedButton.icon(
                       onPressed:
-                          events.any((event) => event.period == currentPeriod)
+                          enabled && events.any((event) => event.period == currentPeriod)
                           ? onUndoLastEvent
                           : null,
                       icon: const Icon(Icons.undo_rounded),
                       label: const Text('Undo Last Event'),
                     ),
                     FilledButton(
-                      onPressed: onEndMatch,
+                      onPressed: enabled ? onEndMatch : null,
                       child: const Text('End Match'),
                     ),
                     if (timerExpired)
                       FilledButton.tonal(
-                        onPressed: onOvertime,
+                        onPressed: enabled ? onOvertime : null,
                         child: const Text('Overtime'),
                       ),
                   ],

@@ -21,6 +21,7 @@ import 'package:tiska_tournament_manager/main.dart';
 import 'package:tiska_tournament_manager/draw_sheet_screen.dart';
 import 'package:tiska_tournament_manager/home_screen.dart';
 import 'package:tiska_tournament_manager/competition_categories_screen.dart';
+import 'package:tiska_tournament_manager/competition_results_screen.dart';
 import 'package:tiska_tournament_manager/live_match_state.dart';
 import 'package:tiska_tournament_manager/tatami_display_screen.dart';
 import 'package:tiska_tournament_manager/tournament_backend.dart';
@@ -133,6 +134,399 @@ Widget _competitionExecution(
 }
 
 void main() {
+  testWidgets('points warning counts fit a narrow mobile screen', (tester) async {
+    tester.view.physicalSize = const Size(320, 800);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final competitors = _competitors(2);
+    final division = _executionDivision(competitors).copyWith(
+      competitionType: CompetitionType.jiyuKumite,
+      inProgressMatch: DivisionInProgressMatch(matchId: 'match_1', timerRemainingSeconds: 60,
+        competitorAWarningStage: 3, events: [DivisionMatchEventRecord(
+          competitorId: competitors.first.id, kind: KumiteEventKind.warning,
+          warningType: KumiteWarningType.contact, warningStage: KumiteWarningStage.third,
+          timestamp: 1,
+        )]),
+    );
+    await tester.pumpWidget(_competitionExecution(competitors, (_, _) {}, division: division));
+    await tester.pumpAndSettle();
+    final block = find.byKey(ValueKey('points-editor-${competitors.first.id}'));
+    await tester.scrollUntilVisible(block, 300);
+    await tester.pumpAndSettle();
+    expect(find.text('Warnings: 1 (Hansoku)'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('restored warning counts and undo preserve the confirmation threshold', (tester) async {
+    tester.view.physicalSize = const Size(1000, 1800);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final competitors = _competitors(2);
+    final warned = competitors.first;
+    final division = _executionDivision(competitors).copyWith(
+      competitionType: CompetitionType.jiyuKumite,
+      inProgressMatch: DivisionInProgressMatch(matchId: 'match_1',
+        timerRemainingSeconds: 60, competitorAWarningStage: 3,
+        events: [for (var timestamp = 1; timestamp <= 2; timestamp++) DivisionMatchEventRecord(
+          competitorId: warned.id, kind: KumiteEventKind.warning,
+          warningType: KumiteWarningType.contact, warningStage: KumiteWarningStage.third,
+          timestamp: timestamp,
+        )],
+      ),
+    );
+    await tester.pumpWidget(_competitionExecution(competitors, (_, _) {}, division: division));
+    await tester.pumpAndSettle();
+    final block = find.byKey(ValueKey('points-editor-${warned.id}'));
+    Future<void> warn(String label) async {
+      final button = find.descendant(of: block, matching: find.text(label));
+      await tester.ensureVisible(button);
+      await tester.tap(button);
+      await tester.pumpAndSettle();
+    }
+    await warn('JK');
+    expect(find.textContaining('has 3 warnings'), findsOneWidget);
+    await tester.tap(find.text('Continue Match'));
+    await tester.pumpAndSettle();
+    final undo = find.text('Undo Last Event');
+    await tester.ensureVisible(undo);
+    await tester.tap(undo);
+    await tester.pumpAndSettle();
+    expect(find.text('Disqualify competitor?'), findsNothing);
+    await warn('MK');
+    expect(find.textContaining('has 3 warnings'), findsOneWidget);
+    await tester.tap(find.text('Continue Match'));
+    await tester.pumpAndSettle();
+  });
+
+  testWidgets('short repechage finalists are centered between the feeder matches', (tester) async {
+    for (final entrantCount in [5, 6]) {
+      final competitors = _competitors(entrantCount);
+      final records = entrantCount == 5 ? [
+        _matchRecord('match_1', 'Quarterfinal', competitors[0], competitors[1]),
+        _matchRecord('match_2', 'Semifinal', competitors[0], competitors[2]),
+        _matchRecord('match_3', 'Semifinal', competitors[3], competitors[4]),
+        _matchRecord('match_4', 'Final', competitors[0], competitors[3]),
+        _matchRecord('repechage_1', 'Repechage Round 1', competitors[2], competitors[1]),
+        _matchRecord('repechage_2', 'Repechage Round 2', competitors[1], competitors[4]),
+      ] : [
+        _matchRecord('match_1', 'Quarterfinal', competitors[0], competitors[1]),
+        _matchRecord('match_2', 'Quarterfinal', competitors[2], competitors[3]),
+        _matchRecord('match_3', 'Semifinal', competitors[0], competitors[4]),
+        _matchRecord('match_4', 'Semifinal', competitors[2], competitors[5]),
+        _matchRecord('match_5', 'Final', competitors[0], competitors[2]),
+        _matchRecord('repechage_1', 'Repechage Round 1', competitors[4], competitors[1]),
+        _matchRecord('repechage_2', 'Repechage Round 1', competitors[5], competitors[3]),
+      ];
+      final division = _divisionFor(competitors).copyWith(matchRecords: records.map((record) =>
+        DivisionMatchRecord.fromMap({...record.toMap(), 'competitorAFlags': 3, 'competitorBFlags': 2})).toList());
+      for (final printFriendly in [false, true]) {
+      await tester.pumpWidget(MaterialApp(home: Scaffold(body: DrawSheetContent(
+        division: division, competitors: competitors, printFriendly: printFriendly,
+      ))));
+      await tester.pumpAndSettle();
+      final feeder = find.byKey(const ValueKey('Repechage-round-0'));
+      final finalColumn = find.byKey(const ValueKey('Repechage-round-1'));
+      final first = find.descendant(of: feeder, matching: find.byKey(const ValueKey('round-match-0')));
+      final second = find.descendant(of: feeder, matching: find.byKey(const ValueKey('round-match-1')));
+      final finalMatch = find.descendant(of: finalColumn, matching: find.byKey(const ValueKey('round-match-0')));
+      final midpoint = (tester.getCenter(first).dy + tester.getCenter(second).dy) / 2;
+      expect(tester.getCenter(finalMatch).dy, closeTo(midpoint, 0.5), reason: '$entrantCount entrants');
+      expect(tester.takeException(), isNull);
+      }
+    }
+  });
+
+  testWidgets('all point warnings are enabled and disqualification requires confirmation', (tester) async {
+    tester.view.physicalSize = const Size(1000, 1800);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final competitors = _competitors(2);
+    var saved = <DivisionMatchRecord>[];
+    await tester.pumpWidget(_competitionExecution(competitors, (matches, _) => saved = matches,
+      division: _executionDivision(competitors).copyWith(competitionType: CompetitionType.jiyuKumite)));
+    await tester.pumpAndSettle();
+    final warned = find.byKey(ValueKey('points-editor-${competitors[0].id}'));
+    for (final label in ['JK', 'MK', 'CK', 'JC', 'MC', 'CC', 'JH', 'MH', 'CH']) {
+      final button = find.descendant(of: warned, matching: find.widgetWithText(OutlinedButton, label));
+      expect(tester.widget<OutlinedButton>(button).onPressed, isNotNull);
+    }
+    for (final label in ['CH', 'JK', 'MC']) {
+      final button = find.descendant(of: warned, matching: find.text(label));
+      await tester.ensureVisible(button);
+      await tester.tap(button);
+      await tester.pumpAndSettle();
+    }
+    expect(find.text('Disqualify competitor?'), findsOneWidget);
+    expect(saved, isEmpty);
+    await tester.tap(find.text('Continue Match'));
+    await tester.pumpAndSettle();
+    final point = find.descendant(of: warned, matching: find.text('Waza-ari'));
+    await tester.ensureVisible(point);
+    await tester.tap(point);
+    await tester.pumpAndSettle();
+    expect(find.text('Disqualify competitor?'), findsNothing);
+    final fourth = find.descendant(of: warned, matching: find.text('JH'));
+    await tester.ensureVisible(fourth);
+    await tester.tap(fourth);
+    await tester.pumpAndSettle();
+    expect(find.textContaining('has 4 warnings'), findsOneWidget);
+    await tester.tap(find.text('Disqualify'));
+    await tester.pumpAndSettle();
+    expect(saved.single.winnerId, competitors[1].id);
+    expect(saved.single.finishReason, KumiteFinishReason.warning);
+    expect(saved.single.events.where((event) => event.kind == KumiteEventKind.warning), hasLength(4));
+    expect(saved.single.events.first.shortLabel, 'CH');
+  });
+
+  test('legacy joint fourth placements display and serialize as joint third', () {
+    final placement = DivisionPlacement.fromMap({
+      'placeLabel': '4th Place (Joint)', 'competitorIds': ['one', 'two'],
+    });
+    expect(placement.placeLabel, '3rd Place (Joint)');
+    expect(placement.toMap()['placeLabel'], '3rd Place (Joint)');
+    expect(const DivisionPlacement(placeLabel: 'Joint 4th Place', competitorIds: []).placeLabel, '3rd Place (Joint)');
+  });
+
+  testWidgets('team spectator rosters fit mobile width', (tester) async {
+    tester.view.physicalSize = const Size(320, 800);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final competitors = _competitors(5);
+    final division = _divisionFor(competitors).copyWith(
+      competitionTemplate: CompetitionTemplate.flagTeams, progress: DivisionProgress.running,
+      teams: [
+        DivisionTeam(id: 'team-1', number: 1, memberIds: competitors.take(4).map((item) => item.id).toList()),
+        DivisionTeam(id: 'team-2', number: 2, memberIds: [competitors.last.id]),
+      ],
+    );
+    final teams = division.bracketEntrants(competitors);
+    await tester.pumpWidget(MaterialApp(home: TatamiDisplayScreen(
+      watchTatamiDefinitions: () => Stream.value([const TatamiDefinition(name: 'Tatami 1', judgesCount: 5)]),
+      watchDivisions: () => Stream.value([division]), watchCompetitors: () => Stream.value(competitors),
+      watchLiveMatchState: (_) => Stream.value(LiveMatchState(
+        tatamiName: 'Tatami 1', divisionId: division.id, divisionTitle: 'Team Kata',
+        competitionType: CompetitionType.kata, executionMode: CompetitionExecutionMode.flagVoting,
+        updatedAt: 1, competitorA: teams[0], competitorB: teams[1],
+      )),
+    )));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('team-member-count-team-1')), findsOneWidget);
+    expect(find.text('5 - Competitor 5'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('team registration and results fit a narrow mobile screen', (tester) async {
+    tester.view.physicalSize = const Size(320, 800);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final competitors = _competitors(5);
+    final division = _divisionFor(competitors).copyWith(
+      competitionTemplate: CompetitionTemplate.flagTeams,
+      teams: [
+        DivisionTeam(id: 'team-1', number: 1, memberIds: competitors.take(4).map((item) => item.id).toList()),
+        DivisionTeam(id: 'team-2', number: 2, memberIds: [competitors.last.id]),
+      ],
+      placements: const [DivisionPlacement(placeLabel: '1st Place', competitorIds: ['team-1'])],
+    );
+    await tester.pumpWidget(MaterialApp(home: CompetitionResultsScreen(division: division, competitors: competitors)));
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(MaterialApp(home: DivisionRegistrationScreen(
+      competitors: competitors, divisions: [], tatamiNames: ['Tatami 1'],
+      watchCompetitionCategories: () => Stream.value([
+        const CompetitionCategory(id: 'team-kata', name: 'Team Kata', template: CompetitionTemplate.flagTeams),
+      ]), onSave: (_) async {}, onDelete: (_) async {},
+    )));
+    await tester.pumpAndSettle();
+    final add = find.byKey(const ValueKey('add-division-team'));
+    await tester.ensureVisible(add);
+    await tester.tap(add);
+    await tester.pumpAndSettle();
+    expect(find.text('Team 1'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('team draw results show short names and long roster references below repechage', (tester) async {
+    final competitors = _competitors(7);
+    final division = _divisionFor(competitors).copyWith(
+      competitionTemplate: CompetitionTemplate.flagTeams,
+      teams: [
+        DivisionTeam(id: 'team-1', number: 1, memberIds: competitors.take(3).map((item) => item.id).toList()),
+        DivisionTeam(id: 'team-2', number: 2, memberIds: competitors.skip(3).map((item) => item.id).toList()),
+      ],
+      placements: const [
+        DivisionPlacement(placeLabel: '1st Place', competitorIds: ['team-1']),
+        DivisionPlacement(placeLabel: '2nd Place', competitorIds: ['team-2']),
+      ],
+    );
+    await tester.pumpWidget(MaterialApp(home: Scaffold(body: DrawSheetContent(
+      division: division, competitors: competitors, printFriendly: true,
+    ))));
+    final result = find.byKey(const ValueKey('draw-results'));
+    expect(find.descendant(of: result, matching: find.text('1 - Competitor 1')), findsOneWidget);
+    expect(find.descendant(of: result, matching: find.byKey(const ValueKey('team-member-count-team-2'))), findsOneWidget);
+    expect(find.descendant(of: result, matching: find.text('4 - Competitor 4')), findsNothing);
+    expect(find.descendant(of: result, matching: find.text('See draw sheet roster')), findsOneWidget);
+    expect(tester.getTopLeft(find.text('Team Rosters')).dy, greaterThan(tester.getTopLeft(find.text('Repechage')).dy));
+    expect(find.textContaining('7 - Competitor 7'), findsOneWidget);
+    await tester.pumpWidget(MaterialApp(home: CompetitionResultsScreen(
+      division: division, competitors: competitors,
+    )));
+    expect(find.text('1 - Competitor 1'), findsOneWidget);
+    expect(find.byKey(const ValueKey('team-member-count-team-2')), findsOneWidget);
+  });
+
+  testWidgets('three-team flag advancement ignores shared individual membership', (tester) async {
+    tester.view.physicalSize = const Size(1000, 1800);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final competitors = _competitors(2);
+    var placements = <DivisionPlacement>[];
+    final division = _executionDivision(competitors).copyWith(
+      competitionTemplate: CompetitionTemplate.flagTeams,
+      teams: [
+        DivisionTeam(id: 'team-1', number: 1, memberIds: [competitors[0].id]),
+        DivisionTeam(id: 'team-2', number: 2, memberIds: [competitors[0].id]),
+        DivisionTeam(id: 'team-3', number: 3, memberIds: [competitors[1].id]),
+      ],
+    );
+    await tester.pumpWidget(_competitionExecution(competitors, (_, saved) => placements = saved, division: division));
+    await tester.pumpAndSettle();
+    expect(find.text('Shared team members: Competitor 1'), findsOneWidget);
+    for (var match = 0; match < 3; match++) {
+      final flags = find.byKey(const ValueKey('Aka flags'));
+      await tester.ensureVisible(flags);
+      await tester.enterText(flags, '3');
+      await tester.pump();
+      final next = find.text(match == 2 ? 'Record Final Result' : 'Next Match');
+      await tester.ensureVisible(next);
+      await tester.tap(next);
+      await tester.pumpAndSettle();
+    }
+    expect(placements.first.competitorIds, ['team-1']);
+    expect(placements[1].competitorIds, ['team-3']);
+    expect(placements.last.competitorIds, ['team-2']);
+  });
+
+  testWidgets('team execution advances teams without limiting individual roster count', (tester) async {
+    final competitors = _competitors(18);
+    var savedMatches = <DivisionMatchRecord>[];
+    var savedPlacements = <DivisionPlacement>[];
+    final division = _executionDivision(competitors).copyWith(
+      competitionTemplate: CompetitionTemplate.flagTeams,
+      teams: [
+        DivisionTeam(id: 'team-1', number: 1, memberIds: competitors.take(17).map((item) => item.id).toList()),
+        DivisionTeam(id: 'team-2', number: 2, memberIds: [competitors.last.id]),
+      ],
+    );
+    await tester.pumpWidget(_competitionExecution(competitors, (matches, placements) {
+      savedMatches = matches; savedPlacements = placements;
+    }, division: division));
+    await tester.pumpAndSettle();
+    expect(find.text('Final'), findsOneWidget);
+    expect(find.textContaining('2 teams'), findsOneWidget);
+    final flags = find.byKey(const ValueKey('Aka flags'));
+    await tester.ensureVisible(flags);
+    await tester.enterText(flags, '3');
+    final record = find.text('Record Final Result');
+    await tester.ensureVisible(record);
+    await tester.tap(record);
+    await tester.pumpAndSettle();
+    expect(savedMatches.single.winnerId, 'team-1');
+    expect(savedPlacements.first.competitorIds, ['team-1']);
+    expect(savedPlacements[1].competitorIds, ['team-2']);
+  });
+
+  testWidgets('team builder saves two numbered teams with shared membership', (tester) async {
+    tester.view.physicalSize = const Size(1000, 1800);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final competitors = _competitors(2);
+    Division? saved;
+    const category = CompetitionCategory(id: 'team-kata', name: 'Team Kata', template: CompetitionTemplate.flagTeams);
+    await tester.pumpWidget(MaterialApp(home: DivisionRegistrationScreen(
+      competitors: competitors, divisions: [], tatamiNames: ['Tatami 1'],
+      watchCompetitionCategories: () => Stream.value([category]),
+      onSave: (division) async => saved = division, onDelete: (_) async {},
+    )));
+    await tester.pumpAndSettle();
+    for (var teamNumber = 1; teamNumber <= 2; teamNumber++) {
+      final addTeam = find.byKey(const ValueKey('add-division-team'));
+      await tester.ensureVisible(addTeam);
+      await tester.tap(addTeam);
+      await tester.pumpAndSettle();
+      final search = find.byKey(ValueKey('team-search-$teamNumber-0'));
+      await tester.ensureVisible(search);
+      await tester.enterText(search, '1');
+      await tester.pumpAndSettle();
+      final addMember = find.byTooltip('Add 1 to Team $teamNumber');
+      await tester.ensureVisible(addMember);
+      await tester.tap(addMember);
+      await tester.pumpAndSettle();
+    }
+    final save = find.text('Add Division');
+    await tester.ensureVisible(save);
+    await tester.tap(save);
+    await tester.pumpAndSettle();
+    expect(saved!.teams.map((team) => team.number), [1, 2]);
+    expect(saved!.teams.every((team) => team.memberIds.single == competitors.first.id), isTrue);
+    expect(saved!.competitorIds, [competitors.first.id]);
+    expect(saved!.teamRules.maximumMembers, isNull);
+    expect(saved!.teamRules.allowNames, isFalse);
+  });
+
+  testWidgets('admin team template defaults and rule controls are saved', (tester) async {
+    tester.view.physicalSize = const Size(1000, 1800);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    CompetitionCategory? saved;
+    await tester.pumpWidget(MaterialApp(home: CompetitionCategoriesScreen(
+      watchCategories: () => Stream.value([]), onSave: (category) async => saved = category,
+      onDelete: (_) async {},
+    )));
+    final template = find.byType(DropdownButton<CompetitionTemplate>);
+    await tester.ensureVisible(template);
+    await tester.tap(template);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Flag-Based Team Scoring').last);
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byKey(const ValueKey('competition-category-name')), 'Team Kata');
+    expect(tester.widget<SwitchListTile>(find.byKey(const ValueKey('team-shared-members'))).value, isTrue);
+    expect(tester.widget<SwitchListTile>(find.byKey(const ValueKey('team-allow-names'))).value, isFalse);
+    final create = find.byKey(const ValueKey('add-competition-category'));
+    await tester.ensureVisible(create);
+    await tester.tap(create);
+    await tester.pumpAndSettle();
+    expect(saved!.template, CompetitionTemplate.flagTeams);
+    expect(saved!.teamRules, const TeamRules());
+    await tester.ensureVisible(find.byKey(const ValueKey('team-minimum')));
+    await tester.enterText(find.byKey(const ValueKey('team-minimum')), '2');
+    final shared = find.byKey(const ValueKey('team-shared-members'));
+    await tester.ensureVisible(shared);
+    await tester.tap(shared);
+    await tester.pumpAndSettle();
+    final names = find.byKey(const ValueKey('team-allow-names'));
+    await tester.ensureVisible(names);
+    await tester.tap(names);
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(find.byKey(const ValueKey('competition-category-name')));
+    await tester.enterText(find.byKey(const ValueKey('competition-category-name')), 'Named Team Kata');
+    await tester.ensureVisible(create);
+    await tester.tap(create);
+    await tester.pumpAndSettle();
+    expect(saved!.teamRules.minimumMembers, 2);
+    expect(saved!.teamRules.allowSharedMembers, isFalse);
+    expect(saved!.teamRules.allowNames, isTrue);
+  });
+
   testWidgets('category management fits mobile width with long names', (tester) async {
     tester.view.physicalSize = const Size(320, 800);
     tester.view.devicePixelRatio = 1;
@@ -1008,14 +1402,14 @@ void main() {
 
     expect(
       savedPlacements.any(
-        (placement) => placement.placeLabel == '4th Place (Joint)',
+        (placement) => placement.placeLabel == '3rd Place (Joint)',
       ),
       isTrue,
     );
     await tester.scrollUntilVisible(
-      find.textContaining('4th Place (Joint)'),
+      find.textContaining('3rd Place (Joint)'),
       -300,
     );
-    expect(find.textContaining('4th Place (Joint)'), findsOneWidget);
+    expect(find.textContaining('3rd Place (Joint)'), findsOneWidget);
   });
 }

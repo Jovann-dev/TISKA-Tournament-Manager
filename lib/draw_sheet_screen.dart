@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import 'tournament_local_store.dart';
 import 'tournament_models.dart';
+import 'team_roster_widgets.dart';
 
 class DrawSheetScreen extends StatelessWidget {
   final String tournamentId;
@@ -99,13 +100,8 @@ class DrawSheetContent extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final competitorById = <String, Competitor>{
-      for (final competitor in competitors) competitor.id: competitor,
-    };
-    final orderedCompetitors = division.competitorIds
-        .map((id) => competitorById[id])
-        .whereType<Competitor>()
-        .toList();
+    final orderedCompetitors = division.bracketEntrants(competitors);
+    final rosterAnchor = GlobalKey();
     final model = _DrawSheetModel.fromDivision(
       division: division,
       competitors: orderedCompetitors,
@@ -132,15 +128,25 @@ class DrawSheetContent extends StatelessWidget {
                       flex: 7,
                       child: _HeaderCard(
                         division: division,
-                        competitors: orderedCompetitors,
+                        competitors: division.isTeamDivision ? competitors.where((item) =>
+                          division.competitorIds.contains(item.id)).toList() : orderedCompetitors,
                       ),
                     ),
                     const SizedBox(width: 16),
                     Expanded(
                       flex: 3,
                       child: _ResultsPanel(
+                        key: const ValueKey('draw-results'),
                         placements: model.placements,
                         competitorById: model.competitorById,
+                        division: division, registered: competitors,
+                        onViewRoster: printFriendly ? null : () {
+                          final target = rosterAnchor.currentContext;
+                          if (target != null) {
+                            Scrollable.ensureVisible(target,
+                                duration: const Duration(milliseconds: 300));
+                          }
+                        },
                       ),
                     ),
                   ],
@@ -162,6 +168,12 @@ class DrawSheetContent extends StatelessWidget {
                   title: 'Repechage',
                   rounds: model.repechageRounds,
                 ),
+                if (division.isTeamDivision) ...[
+                  const SizedBox(height: 16),
+                  Padding(key: rosterAnchor, padding: const EdgeInsets.all(16),
+                    child: TeamRosterPanel(division: division,
+                      competitors: competitors, printFriendly: printFriendly)),
+                ],
               ],
             ),
           ),
@@ -435,6 +447,40 @@ class _BracketPanel extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     const columnWidth = 160.0;
+    final centerFinalists = title == 'Repechage' && rounds.length == 2 &&
+        rounds.first.matches.length == 2 && rounds.last.displayLabel == 'Finalists';
+    double? headerHeight;
+    if (centerFinalists) {
+      for (final round in rounds) {
+        final painter = TextPainter(
+          text: TextSpan(text: round.displayLabel,
+            style: DefaultTextStyle.of(context).style.merge(Theme.of(context).textTheme.titleSmall)),
+          textDirection: Directionality.of(context), textScaler: MediaQuery.textScalerOf(context),
+        )..layout(maxWidth: columnWidth);
+        if (painter.height > (headerHeight ?? 0)) headerHeight = painter.height;
+        painter.dispose();
+      }
+    }
+    final roundColumns = Row(
+      crossAxisAlignment: centerFinalists ? CrossAxisAlignment.stretch : CrossAxisAlignment.start,
+      children: List<Widget>.generate(rounds.length, (index) {
+        final round = rounds[index];
+        return Padding(
+          padding: EdgeInsets.only(right: index == rounds.length - 1 ? 0 : 16),
+          child: SizedBox(
+            key: ValueKey('$title-round-$index'), width: columnWidth,
+            child: _RoundColumn(
+              round: round, compact: false,
+              centerMatch: centerFinalists && index == 1,
+              headerHeight: headerHeight,
+              topInset: centerFinalists ? _topInsetFor(0) : _topInsetFor(index) +
+                  (index > 0 && rounds[index - 1].loserArrowAfterIndex != null ? 14 : 0),
+              matchGap: _matchGapFor(index),
+            ),
+          ),
+        );
+      }),
+    );
     return Card(
       elevation: 1,
       shape: RoundedRectangleBorder(
@@ -457,33 +503,7 @@ class _BracketPanel extends StatelessWidget {
                 children: [
                   Text(title, style: Theme.of(context).textTheme.titleLarge),
                   const SizedBox(height: 10),
-                  Row(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: List<Widget>.generate(rounds.length, (index) {
-                      final round = rounds[index];
-                      return Padding(
-                        padding: EdgeInsets.only(
-                          right: index == rounds.length - 1 ? 0 : 16,
-                        ),
-                        child: SizedBox(
-                          width: columnWidth,
-                          child: _RoundColumn(
-                            round: round,
-                            compact: false,
-                            topInset:
-                                _topInsetFor(index) +
-                                (index > 0 &&
-                                        rounds[index - 1]
-                                                .loserArrowAfterIndex !=
-                                            null
-                                    ? 14
-                                    : 0),
-                            matchGap: _matchGapFor(index),
-                          ),
-                        ),
-                      );
-                    }),
-                  ),
+                  centerFinalists ? IntrinsicHeight(child: roundColumns) : roundColumns,
                 ],
               ),
       ),
@@ -516,12 +536,16 @@ class _RoundColumn extends StatelessWidget {
   final bool compact;
   final double topInset;
   final double matchGap;
+  final bool centerMatch;
+  final double? headerHeight;
 
   const _RoundColumn({
     required this.round,
     required this.compact,
     required this.topInset,
     required this.matchGap,
+    this.centerMatch = false,
+    this.headerHeight,
   });
 
   @override
@@ -529,8 +553,11 @@ class _RoundColumn extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text(round.displayLabel, style: Theme.of(context).textTheme.titleSmall),
+        SizedBox(height: headerHeight,
+          child: Text(round.displayLabel, style: Theme.of(context).textTheme.titleSmall)),
         SizedBox(height: topInset),
+        if (centerMatch) Expanded(child: Center(child: _matchTile(round.matches.single, 0)))
+        else
         ...List<Widget>.generate(round.matches.length, (index) {
           final match = round.matches[index];
           final showLoserArrow = round.loserArrowAfterIndex == index;
@@ -542,16 +569,7 @@ class _RoundColumn extends StatelessWidget {
             ),
             child: Column(
               children: [
-                _MatchTile(
-                  competitorANumber: match.competitorANumber,
-                  competitorBNumber: match.competitorBNumber,
-                  topMarker: match.topMarker,
-                  bottomMarker: match.bottomMarker,
-                  competitorASubscript: match.competitorASubscript,
-                  competitorBSubscript: match.competitorBSubscript,
-                  details: match.details,
-                  compact: compact,
-                ),
+                _matchTile(match, index),
                 if (showLoserArrow) const _LoserFeedArrow(),
               ],
             ),
@@ -560,6 +578,14 @@ class _RoundColumn extends StatelessWidget {
       ],
     );
   }
+
+  Widget _matchTile(_MatchData match, int index) => _MatchTile(
+    key: ValueKey('round-match-$index'),
+    competitorANumber: match.competitorANumber, competitorBNumber: match.competitorBNumber,
+    topMarker: match.topMarker, bottomMarker: match.bottomMarker,
+    competitorASubscript: match.competitorASubscript, competitorBSubscript: match.competitorBSubscript,
+    details: match.details, compact: compact,
+  );
 }
 
 class _LoserFeedArrow extends StatelessWidget {
@@ -588,6 +614,7 @@ class _MatchTile extends StatelessWidget {
   final bool compact;
 
   const _MatchTile({
+    super.key,
     required this.competitorANumber,
     required this.competitorBNumber,
     required this.topMarker,
@@ -811,8 +838,12 @@ class _CrossPainter extends CustomPainter {
 class _ResultsPanel extends StatelessWidget {
   final List<DivisionPlacement> placements;
   final Map<String, Competitor> competitorById;
+  final Division division;
+  final List<Competitor> registered;
+  final VoidCallback? onViewRoster;
 
-  const _ResultsPanel({required this.placements, required this.competitorById});
+  const _ResultsPanel({super.key, required this.placements, required this.competitorById,
+    required this.division, required this.registered, this.onViewRoster});
 
   List<InlineSpan> _winnerSpan(String competitorId) {
     final competitor = competitorById[competitorId];
@@ -884,11 +915,15 @@ class _ResultsPanel extends StatelessWidget {
                             runSpacing: 4,
                             children: placement.competitorIds
                                 .map(
-                                  (competitorId) => Text.rich(
-                                    TextSpan(
-                                      children: _winnerSpan(competitorId),
-                                    ),
-                                  ),
+                                  (competitorId) => division.isTeamDivision
+                                      ? Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                                          Text('Team ${division.teamById(competitorId)?.number ?? '?'}'),
+                                          if (division.teamById(competitorId)?.name?.isNotEmpty ?? false)
+                                            Text(division.teamById(competitorId)!.name!),
+                                          TeamMemberDetails(division: division, teamId: competitorId,
+                                            competitors: registered, fontSize: 11, onViewRoster: onViewRoster),
+                                        ])
+                                      : Text.rich(TextSpan(children: _winnerSpan(competitorId))),
                                 )
                                 .toList(),
                           ),

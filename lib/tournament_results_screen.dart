@@ -260,7 +260,9 @@ class _TournamentResultsScreenState extends State<TournamentResultsScreen> {
                                   ),
                                   const SizedBox(height: 2),
                                   Text(
-                                    'Competitors: ${division.competitorIds.length}',
+                                    division.isTeamDivision
+                                      ? 'Teams: ${division.teams.length} | Individuals: ${division.competitorIds.length}'
+                                      : 'Competitors: ${division.competitorIds.length}',
                                     style: Theme.of(context)
                                         .textTheme
                                         .bodySmall,

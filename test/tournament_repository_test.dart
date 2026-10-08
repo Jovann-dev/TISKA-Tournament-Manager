@@ -241,6 +241,61 @@ Map<String, dynamic> snapshot(Map<String, int> scores) => {
 };
 
 void main() {
+  test('team roster limits and shared membership are validated and locked', () async {
+    final backend = FakeBackend(initialSnapshot());
+    final result = await repository(backend, MemoryStore(), isAdmin: true);
+    const category = CompetitionCategory(id: 'team-kata', name: 'Team Kata',
+      template: CompetitionTemplate.flagTeams);
+    await result.saveCompetitionCategory(category);
+    final teams = division('teams', 'Tatami 1', ['c0']).copyWith(
+      competitionCategoryId: category.id, competitionCategoryName: category.name,
+      competitionTemplate: category.template,
+      teams: const [
+        DivisionTeam(id: 'team-1', number: 1, memberIds: ['c0']),
+        DivisionTeam(id: 'team-2', number: 2, memberIds: ['c0']),
+      ],
+    );
+    await result.saveDivision(teams);
+    await expectLater(result.deleteCompetitor('c0'), throwsStateError);
+    await expectLater(result.replaceCompetitors(entrants().skip(1).toList()), throwsStateError);
+    await result.replaceCompetitors(entrants());
+    await result.synchronize();
+    final user = await repository(backend, MemoryStore());
+    await expectLater(user.saveDivision(teams.copyWith(teamRules: const TeamRules(
+      allowNames: true))), throwsStateError);
+    await expectLater(result.saveDivision(teams.copyWith(teamRules: const TeamRules(
+      allowSharedMembers: false))), throwsStateError);
+    await expectLater(result.saveDivision(teams.copyWith(teamRules: const TeamRules(
+      minimumMembers: 2))), throwsStateError);
+    await result.startDivisionOnTatami('Tatami 1', 'teams');
+    await expectLater(result.saveDivision(teams.copyWith(teams: const [
+      DivisionTeam(id: 'team-2', number: 2, memberIds: ['c0']),
+      DivisionTeam(id: 'team-1', number: 1, memberIds: ['c0']),
+    ])), throwsStateError);
+    await expectLater(result.deleteCompetitor('c0'), throwsStateError);
+    final restored = TournamentBackup.decode(result.captureBackup().encode());
+    expect(restored.divisions.singleWhere((item) => item.id == 'teams').teams, hasLength(2));
+  });
+
+  test('team divisions serialize and project teams as bracket entrants', () {
+    final teamDivision = division('team-division', 'Tatami 1', ['c0', 'c1']).copyWith(
+      competitionTemplate: CompetitionTemplate.flagTeams,
+      teams: const [
+        DivisionTeam(id: 'team-1', number: 1, memberIds: ['c0']),
+        DivisionTeam(id: 'team-2', number: 2, memberIds: ['c0', 'c1']),
+      ],
+    );
+    final restored = Division.fromMap(teamDivision.id, Map<String, dynamic>.from(teamDivision.toMap()));
+    expect(restored.executionMode, CompetitionExecutionMode.flagVoting);
+    expect(restored.bracketEntrants(entrants()).map((item) => item.id), ['team-1', 'team-2']);
+    expect(restored.teamMembers('team-2', entrants()), hasLength(2));
+    expect(restored.teamRules.minimumMembers, 1);
+    expect(restored.teamRules.maximumMembers, isNull);
+    expect(restored.teamRules.allowSharedMembers, isTrue);
+    expect(restored.teamRules.allowNames, isFalse);
+    expect(() => TeamRules.fromMap({'minimumMembers': 3, 'maximumMembers': 2}), throwsFormatException);
+  });
+
   test('non-admin restore cannot change the category catalog', () async {
     final backend = FakeBackend(initialSnapshot());
     final user = await repository(backend, MemoryStore());

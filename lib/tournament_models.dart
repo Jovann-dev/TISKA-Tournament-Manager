@@ -16,18 +16,114 @@ enum DivisionProgress { queued, running, completed }
 
 enum CompetitionExecutionMode { flagVoting, manualWinner }
 
-enum CompetitionTemplate { flagVoting, points }
+enum CompetitionTemplate { flagVoting, points, flagTeams }
 
 extension CompetitionTemplateDetails on CompetitionTemplate {
   String get label => switch (this) {
     CompetitionTemplate.flagVoting => 'Flag-Based Scoring',
     CompetitionTemplate.points => 'Points-Based Scoring',
+    CompetitionTemplate.flagTeams => 'Flag-Based Team Scoring',
   };
 
   CompetitionExecutionMode get executionMode => switch (this) {
     CompetitionTemplate.flagVoting => CompetitionExecutionMode.flagVoting,
+    CompetitionTemplate.flagTeams => CompetitionExecutionMode.flagVoting,
     CompetitionTemplate.points => CompetitionExecutionMode.manualWinner,
   };
+}
+
+class TeamRules {
+  final int minimumMembers;
+  final int? maximumMembers;
+  final bool allowSharedMembers;
+  final bool allowNames;
+
+  const TeamRules({
+    this.minimumMembers = 1, this.maximumMembers,
+    this.allowSharedMembers = true, this.allowNames = false,
+  });
+
+  Map<String, Object?> toMap() => {
+    'minimumMembers': minimumMembers, 'maximumMembers': maximumMembers,
+    'allowSharedMembers': allowSharedMembers, 'allowNames': allowNames,
+  };
+
+  @override
+  bool operator ==(Object other) => other is TeamRules &&
+      minimumMembers == other.minimumMembers && maximumMembers == other.maximumMembers &&
+      allowSharedMembers == other.allowSharedMembers && allowNames == other.allowNames;
+
+  @override
+  int get hashCode => Object.hash(minimumMembers, maximumMembers, allowSharedMembers, allowNames);
+
+  factory TeamRules.fromMap(Map<String, dynamic> map) {
+    final minimum = map['minimumMembers'] ?? 1;
+    final maximum = map['maximumMembers'];
+    final shared = map['allowSharedMembers'] ?? true;
+    final names = map['allowNames'] ?? false;
+    if (minimum is! int || minimum < 1 || (maximum != null &&
+        (maximum is! int || maximum < minimum)) || shared is! bool || names is! bool) {
+      throw const FormatException('Invalid team membership rules.');
+    }
+    return TeamRules(minimumMembers: minimum, maximumMembers: maximum as int?,
+      allowSharedMembers: shared, allowNames: names);
+  }
+}
+
+class DivisionTeam {
+  final String id;
+  final int number;
+  final String? name;
+  final List<String> memberIds;
+
+  const DivisionTeam({required this.id, required this.number, this.name, required this.memberIds});
+
+  String get label => name == null || name!.trim().isEmpty ? 'Team $number' : name!;
+
+  DivisionTeam copyWith({List<String>? memberIds, String? name}) => DivisionTeam(
+    id: id, number: number, name: name ?? this.name, memberIds: memberIds ?? this.memberIds,
+  );
+
+  Map<String, Object?> toMap() => {'id': id, 'number': number, 'name': name, 'memberIds': memberIds};
+
+  factory DivisionTeam.fromMap(Map<String, dynamic> map) => DivisionTeam(
+    id: map['id'] as String, number: map['number'] as int,
+    name: map['name'] as String?, memberIds: (map['memberIds'] as List).cast<String>(),
+  );
+}
+
+void validateTeamRosters(Division division, Set<String> registeredIds) {
+  final rules = TeamRules.fromMap(division.teamRules.toMap().cast<String, dynamic>());
+  if (division.teams.length < 2 || division.teams.length > 16) {
+    throw StateError('A team division needs 2-16 teams.');
+  }
+  final teamIds = <String>{};
+  final teamNumbers = <int>{};
+  final members = <String>{};
+  for (final team in division.teams) {
+    if (team.id.trim().isEmpty || registeredIds.contains(team.id) || !teamIds.add(team.id) ||
+        team.number < 1 || !teamNumbers.add(team.number)) {
+      throw StateError('Team IDs and positive team numbers must be unique.');
+    }
+    if (team.memberIds.length < rules.minimumMembers ||
+        (rules.maximumMembers != null && team.memberIds.length > rules.maximumMembers!) ||
+        team.memberIds.toSet().length != team.memberIds.length ||
+        !team.memberIds.every(registeredIds.contains)) {
+      throw StateError('${team.label} has an invalid roster or violates the saved team size limits.');
+    }
+    if ((!rules.allowNames && (team.name?.trim().isNotEmpty ?? false)) ||
+        (team.name?.length ?? 0) > 80) {
+      throw StateError('Team names are not allowed or exceed 80 characters.');
+    }
+    for (final member in team.memberIds) {
+      if (!members.add(member) && !rules.allowSharedMembers) {
+        throw StateError('A competitor cannot join more than one team in this division.');
+      }
+    }
+  }
+  if (members.length != division.competitorIds.length || !members.containsAll(division.competitorIds)) {
+    throw StateError('Team rosters must match the division registrations.');
+  }
 }
 
 class CompetitionCategory {
@@ -35,21 +131,25 @@ class CompetitionCategory {
   final String name;
   final CompetitionTemplate template;
   final bool enabled;
+  final TeamRules teamRules;
 
   const CompetitionCategory({
     required this.id, required this.name, required this.template,
     this.enabled = true,
+    this.teamRules = const TeamRules(),
   });
 
   CompetitionType get legacyType => template == CompetitionTemplate.points
       ? CompetitionType.jiyuKumite : parseCompetitionType(id);
 
-  CompetitionCategory copyWith({bool? enabled}) => CompetitionCategory(
+  CompetitionCategory copyWith({bool? enabled, TeamRules? teamRules}) => CompetitionCategory(
     id: id, name: name, template: template, enabled: enabled ?? this.enabled,
+    teamRules: teamRules ?? this.teamRules,
   );
 
   Map<String, Object?> toMap() => {
     'id': id, 'name': name, 'template': template.name, 'enabled': enabled,
+    if (template == CompetitionTemplate.flagTeams) 'teamRules': teamRules.toMap(),
   };
 
   factory CompetitionCategory.fromMap(Map<String, dynamic> map) {
@@ -63,6 +163,7 @@ class CompetitionCategory {
       id: id, name: name.trim(),
       template: CompetitionTemplate.values.byName(map['template'] as String),
       enabled: map['enabled'] as bool,
+      teamRules: TeamRules.fromMap(Map<String, dynamic>.from(map['teamRules'] as Map? ?? {})),
     );
   }
 }
@@ -413,6 +514,8 @@ class Division {
   final String? competitionCategoryId;
   final String? competitionCategoryName;
   final CompetitionTemplate? competitionTemplate;
+  final List<DivisionTeam> teams;
+  final TeamRules teamRules;
   final int minBeltRank;
   final int maxBeltRank;
   final int minAge;
@@ -435,6 +538,8 @@ class Division {
     this.competitionCategoryId,
     this.competitionCategoryName,
     this.competitionTemplate,
+    this.teams = const [],
+    this.teamRules = const TeamRules(),
     required this.minBeltRank,
     required this.maxBeltRank,
     required this.minAge,
@@ -458,6 +563,8 @@ class Division {
     Object? competitionCategoryId = _unset,
     Object? competitionCategoryName = _unset,
     Object? competitionTemplate = _unset,
+    List<DivisionTeam>? teams,
+    TeamRules? teamRules,
     int? minBeltRank,
     int? maxBeltRank,
     int? minAge,
@@ -483,6 +590,8 @@ class Division {
           ? this.competitionCategoryName : competitionCategoryName as String?,
         competitionTemplate: identical(competitionTemplate, _unset)
           ? this.competitionTemplate : competitionTemplate as CompetitionTemplate?,
+      teams: teams ?? this.teams,
+      teamRules: teamRules ?? this.teamRules,
       minBeltRank: minBeltRank ?? this.minBeltRank,
       maxBeltRank: maxBeltRank ?? this.maxBeltRank,
       minAge: minAge ?? this.minAge,
@@ -529,6 +638,24 @@ class Division {
       (competitionType == CompetitionType.jiyuKumite
         ? CompetitionTemplate.points : CompetitionTemplate.flagVoting);
     CompetitionExecutionMode get executionMode => scoringTemplate.executionMode;
+    bool get isTeamDivision => scoringTemplate == CompetitionTemplate.flagTeams;
+    List<String> get entrantIds => isTeamDivision ? teams.map((team) => team.id).toList() : competitorIds;
+
+    List<Competitor> bracketEntrants(List<Competitor> registered) {
+      final byId = {for (final competitor in registered) competitor.id: competitor};
+      if (!isTeamDivision) return competitorIds.map((id) => byId[id]).whereType<Competitor>().toList();
+      return [for (final team in teams) Competitor(
+        id: team.id, number: '${team.number}', name: team.label,
+        belt: '', beltRank: 0, gender: Gender.notSpecified, age: 0,
+      )];
+    }
+
+    DivisionTeam? teamById(String id) => teams.where((team) => team.id == id).firstOrNull;
+    List<Competitor> teamMembers(String id, List<Competitor> registered) {
+      final ids = teamById(id)?.memberIds ?? const <String>[];
+      final byId = {for (final competitor in registered) competitor.id: competitor};
+      return ids.map((id) => byId[id]).whereType<Competitor>().toList();
+    }
     CompetitionType get scoringType => scoringTemplate == CompetitionTemplate.points
         ? CompetitionType.jiyuKumite
         : (competitionType == CompetitionType.jiyuKumite ? CompetitionType.kata : competitionType);
@@ -556,6 +683,8 @@ class Division {
       if (competitionCategoryId != null) 'competitionCategoryId': competitionCategoryId,
       if (competitionCategoryName != null) 'competitionCategoryName': competitionCategoryName,
       if (competitionTemplate != null) 'competitionTemplate': competitionTemplate!.name,
+      if (isTeamDivision) 'teams': teams.map((team) => team.toMap()).toList(),
+      if (isTeamDivision) 'teamRules': teamRules.toMap(),
       'minBeltRank': minBeltRank,
       'maxBeltRank': maxBeltRank,
       'minAge': minAge,
@@ -582,6 +711,9 @@ class Division {
         competitionCategoryName: map['competitionCategoryName'] as String?,
         competitionTemplate: map['competitionTemplate'] == null ? null
           : CompetitionTemplate.values.byName(map['competitionTemplate'] as String),
+      teams: [for (final team in map['teams'] as List? ?? const [])
+        DivisionTeam.fromMap(Map<String, dynamic>.from(team as Map))],
+      teamRules: TeamRules.fromMap(Map<String, dynamic>.from(map['teamRules'] as Map? ?? {})),
       minBeltRank: (map['minBeltRank'] as num?)?.toInt() ?? 1,
       maxBeltRank: (map['maxBeltRank'] as num?)?.toInt() ?? 10,
       minAge: (map['minAge'] as num?)?.toInt() ?? 0,
@@ -700,13 +832,17 @@ class DivisionMatchRecord {
 }
 
 class DivisionPlacement {
-  final String placeLabel;
+  final String _placeLabel;
   final List<String> competitorIds;
 
   const DivisionPlacement({
-    required this.placeLabel,
+    required String placeLabel,
     required this.competitorIds,
-  });
+  }) : _placeLabel = placeLabel;
+
+  String get placeLabel => RegExp(r'\b4th\b', caseSensitive: false).hasMatch(_placeLabel) &&
+      RegExp(r'\bjoint\b', caseSensitive: false).hasMatch(_placeLabel)
+      ? '3rd Place (Joint)' : _placeLabel;
 
   Map<String, Object> toMap() {
     return <String, Object>{

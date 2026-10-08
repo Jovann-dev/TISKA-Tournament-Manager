@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import 'draw_sheet_screen.dart';
 import 'tournament_models.dart';
+import 'team_roster_widgets.dart';
 
 class CompetitionResultsScreen extends StatefulWidget {
   final String tournamentId;
@@ -24,19 +25,21 @@ class _CompetitionResultsScreenState extends State<CompetitionResultsScreen> {
   bool _showNonPlacers = false;
 
   Map<String, Competitor> get _competitorsById => <String, Competitor>{
-    for (final competitor in widget.competitors) competitor.id: competitor,
+    for (final competitor in widget.division.bracketEntrants(widget.competitors)) competitor.id: competitor,
   };
 
   List<Competitor> get _nonPlacers {
     final placedIds = widget.division.placements
         .expand((placement) => placement.competitorIds)
         .toSet();
-    return widget.competitors
+    return widget.division.bracketEntrants(widget.competitors)
         .where((competitor) => !placedIds.contains(competitor.id))
         .toList();
   }
 
   String _competitorLabel(String competitorId) {
+    final team = widget.division.teamById(competitorId);
+    if (team != null) return 'Team ${team.number}${team.name?.isNotEmpty ?? false ? ' - ${team.name}' : ''}';
     final competitor = _competitorsById[competitorId];
     if (competitor == null) {
       return competitorId;
@@ -91,9 +94,15 @@ class _CompetitionResultsScreenState extends State<CompetitionResultsScreen> {
               (placement) => Card(
                 child: ListTile(
                   title: Text(placement.placeLabel),
-                  subtitle: Text(
-                    placement.competitorIds.map(_competitorLabel).join(', '),
-                  ),
+                  subtitle: widget.division.isTeamDivision
+                      ? Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                          for (final id in placement.competitorIds) ...[
+                            Text(_competitorLabel(id)),
+                            TeamMemberDetails(division: widget.division, teamId: id,
+                              competitors: widget.competitors, onViewRoster: _showDrawSheet),
+                          ],
+                        ])
+                      : Text(placement.competitorIds.map(_competitorLabel).join(', ')),
                 ),
               ),
             ),
@@ -116,7 +125,10 @@ class _CompetitionResultsScreenState extends State<CompetitionResultsScreen> {
             ..._nonPlacers.map(
               (competitor) => Card(
                 child: ListTile(
-                  title: Text('${competitor.number} - ${competitor.name}'),
+                  title: Text(_competitorLabel(competitor.id)),
+                  subtitle: widget.division.isTeamDivision ? TeamMemberDetails(
+                    division: widget.division, teamId: competitor.id,
+                    competitors: widget.competitors, onViewRoster: _showDrawSheet) : null,
                 ),
               ),
             ),

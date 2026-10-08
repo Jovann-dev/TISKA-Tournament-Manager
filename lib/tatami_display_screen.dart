@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 
 import 'live_match_state.dart';
 import 'tournament_models.dart';
+import 'team_roster_widgets.dart';
 
 /// Read-only, big-screen friendly view of a single tatami intended for a
 /// spectator display or projector. It mirrors what is happening live in the
@@ -176,7 +177,7 @@ class _TatamiDisplayScreenState extends State<TatamiDisplayScreen> {
       );
     } else if (runningDivision != null) {
       content = showingLiveMatch
-          ? _LiveMatchView(division: runningDivision, liveState: liveState)
+          ? _LiveMatchView(division: runningDivision, liveState: liveState, competitors: _competitors)
           : _DisplayPlaceholder(
               icon: Icons.hourglass_top_rounded,
               title: runningDivision.title,
@@ -325,8 +326,9 @@ class _DisplayPlaceholder extends StatelessWidget {
 class _LiveMatchView extends StatelessWidget {
   final Division division;
   final LiveMatchState liveState;
+  final List<Competitor> competitors;
 
-  const _LiveMatchView({required this.division, required this.liveState});
+  const _LiveMatchView({required this.division, required this.liveState, required this.competitors});
 
   String _formatSeconds(int totalSeconds) {
     final clamped = totalSeconds < 0 ? 0 : totalSeconds;
@@ -342,6 +344,28 @@ class _LiveMatchView extends StatelessWidget {
         icon: Icons.hourglass_top_rounded,
         title: 'Preparing next match',
         subtitle: 'Please stand by.',
+      );
+    }
+
+    if (division.isTeamDivision && MediaQuery.sizeOf(context).width < 600) {
+      return SingleChildScrollView(
+        padding: const EdgeInsets.all(16),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+          Text(liveState.divisionTitle, style: const TextStyle(color: Colors.white, fontSize: 20)),
+          Text(liveState.roundLabel ?? '', style: const TextStyle(color: Colors.white60)),
+          for (final panel in [
+            (competitor: liveState.competitorA!, color: const Color(0xFFB1181A)),
+            (competitor: liveState.competitorB!, color: const Color(0xFF1B4C8F)),
+          ]) ...[
+            const SizedBox(height: 16),
+            _CompetitorPanel(competitor: panel.competitor, accentColor: panel.color,
+              teamDetails: TeamMemberDetails(division: division, teamId: panel.competitor.id,
+                competitors: competitors, foregroundColor: Colors.white,
+                onViewRoster: () => Navigator.push(context, MaterialPageRoute(builder: (context) =>
+                  TeamRosterPage(division: division, competitors: competitors)))),
+            ),
+          ],
+        ]),
       );
     }
 
@@ -376,6 +400,10 @@ class _LiveMatchView extends StatelessWidget {
                 Expanded(
                   child: _CompetitorPanel(
                     competitor: liveState.competitorA!,
+                    teamDetails: division.isTeamDivision ? TeamMemberDetails(
+                      division: division, teamId: liveState.competitorA!.id, competitors: competitors,
+                      foregroundColor: Colors.white, onViewRoster: () => Navigator.push(context,
+                        MaterialPageRoute(builder: (context) => TeamRosterPage(division: division, competitors: competitors)))) : null,
                     accentColor: const Color(0xFFB1181A),
                     points: liveState.hasTimer
                         ? liveState.competitorAPoints
@@ -401,6 +429,10 @@ class _LiveMatchView extends StatelessWidget {
                 Expanded(
                   child: _CompetitorPanel(
                     competitor: liveState.competitorB!,
+                    teamDetails: division.isTeamDivision ? TeamMemberDetails(
+                      division: division, teamId: liveState.competitorB!.id, competitors: competitors,
+                      foregroundColor: Colors.white, onViewRoster: () => Navigator.push(context,
+                        MaterialPageRoute(builder: (context) => TeamRosterPage(division: division, competitors: competitors)))) : null,
                     accentColor: const Color(0xFF1B4C8F),
                     points: liveState.hasTimer
                         ? liveState.competitorBPoints
@@ -581,12 +613,14 @@ class _CompetitorPanel extends StatelessWidget {
   final Color accentColor;
   final int? points;
   final int? warningStage;
+  final Widget? teamDetails;
 
   const _CompetitorPanel({
     required this.competitor,
     required this.accentColor,
     this.points,
     this.warningStage,
+    this.teamDetails,
   });
 
   @override
@@ -630,6 +664,7 @@ class _CompetitorPanel extends StatelessWidget {
               fontWeight: FontWeight.w700,
             ),
           ),
+          if (teamDetails != null) ...[const SizedBox(height: 12), teamDetails!],
           if (points != null) ...[
             const SizedBox(height: 18),
             Text(
@@ -680,6 +715,8 @@ class _LiveResultsView extends StatelessWidget {
   });
 
   String _competitorLabel(String competitorId) {
+    final team = division.teamById(competitorId);
+    if (team != null) return 'Team ${team.number}${team.name?.isNotEmpty ?? false ? ' - ${team.name}' : ''}';
     final competitor = competitorsById[competitorId];
     if (competitor == null) {
       return competitorId;
@@ -704,10 +741,10 @@ class _LiveResultsView extends StatelessWidget {
     final placedIds = division.placements
         .expand((placement) => placement.competitorIds)
         .toSet();
-    return competitorsById.values
+    return division.bracketEntrants(competitorsById.values.toList())
         .where(
           (competitor) =>
-              division.competitorIds.contains(competitor.id) &&
+              division.entrantIds.contains(competitor.id) &&
               !placedIds.contains(competitor.id),
         )
         .toList();
@@ -795,6 +832,13 @@ class _LiveResultsView extends StatelessWidget {
                               fontWeight: FontWeight.w600,
                             ),
                           ),
+                          if (division.isTeamDivision)
+                            for (final id in placement.competitorIds) TeamMemberDetails(
+                              division: division, teamId: id, competitors: competitorsById.values.toList(),
+                              foregroundColor: Colors.white,
+                              onViewRoster: () => Navigator.push(context, MaterialPageRoute(builder: (context) =>
+                                TeamRosterPage(division: division, competitors: competitorsById.values.toList()))),
+                            ),
                         ],
                       ),
                     ),
@@ -814,7 +858,18 @@ class _LiveResultsView extends StatelessWidget {
               ),
             ),
             const SizedBox(height: 8),
-            Text(
+            if (division.isTeamDivision)
+              for (final team in nonPlacers) Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  Text(_competitorLabel(team.id), style: const TextStyle(color: Colors.white)),
+                  TeamMemberDetails(division: division, teamId: team.id,
+                    competitors: competitorsById.values.toList(), foregroundColor: Colors.white,
+                    onViewRoster: () => Navigator.push(context, MaterialPageRoute(builder: (context) =>
+                      TeamRosterPage(division: division, competitors: competitorsById.values.toList())))),
+                ]),
+              )
+            else Text(
               nonPlacers
                   .map(
                     (competitor) => '${competitor.number} ${competitor.name}',

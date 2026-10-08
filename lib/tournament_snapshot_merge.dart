@@ -125,6 +125,8 @@ bool sameDivisionBracket(Division left, Division right) =>
     left.categoryId == right.categoryId &&
     left.competitionLabel == right.competitionLabel &&
     left.scoringTemplate == right.scoringTemplate &&
+    _same(left.teams.map((team) => team.toMap()).toList(), right.teams.map((team) => team.toMap()).toList()) &&
+    left.teamRules == right.teamRules &&
     left.minAge == right.minAge &&
     left.maxAge == right.maxAge &&
     left.minBeltRank == right.minBeltRank &&
@@ -189,14 +191,24 @@ void validateTournamentSnapshot(
       (prior == null || prior.categoryId != division.categoryId)) {
       throw StateError('This competition category is not available for new divisions.');
     }
-    if (division.competitorIds.length < 2 ||
-        division.competitorIds.length > 16 ||
+    if (division.isTeamDivision) {
+      if (enforceCategoryAvailability && (prior == null || prior.categoryId != division.categoryId) &&
+          division.teamRules != category.teamRules) {
+        throw StateError('New team divisions must use the admin category rules.');
+      }
+      validateTeamRosters(division, competitorRows.keys.toSet());
+    }
+    if ((!division.isTeamDivision && (division.competitorIds.length < 2 ||
+        division.competitorIds.length > 16)) ||
         division.competitorIds.toSet().length !=
             division.competitorIds.length ||
         !division.competitorIds.every(competitorRows.containsKey)) {
       throw StateError(
         'Division "${division.title}" needs 2-16 unique registered competitors.',
       );
+    }
+    if (!division.isTeamDivision && division.teams.isNotEmpty) {
+      throw StateError('Only team divisions can contain team rosters.');
     }
     if (!tatamis.contains(division.assignedTatamiName)) {
       throw StateError('Division tatami does not exist.');

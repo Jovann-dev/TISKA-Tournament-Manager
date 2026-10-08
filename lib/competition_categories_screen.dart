@@ -25,6 +25,7 @@ class _CompetitionCategoriesScreenState
     extends State<CompetitionCategoriesScreen> {
   final _nameController = TextEditingController();
   CompetitionTemplate _template = CompetitionTemplate.flagVoting;
+  TeamRules _teamRules = const TeamRules();
   List<CompetitionCategory> _categories = [];
   StreamSubscription<List<CompetitionCategory>>? _subscription;
   bool _busy = false;
@@ -79,6 +80,7 @@ class _CompetitionCategoriesScreenState
           id: 'category-${DateTime.now().microsecondsSinceEpoch}',
           name: name,
           template: _template,
+          teamRules: _teamRules,
         ),
       ),
     );
@@ -109,6 +111,30 @@ class _CompetitionCategoriesScreenState
     }
   }
 
+  Future<void> _editTeamRules(CompetitionCategory category) async {
+    var rules = category.teamRules;
+    final selected = await showDialog<TeamRules>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text('${category.name} Rules'),
+        content: SizedBox(
+          width: 440,
+          child: SingleChildScrollView(child: _TeamRulesEditor(
+            initialRules: rules, onChanged: (value) => rules = value,
+          )),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
+          FilledButton.icon(onPressed: () => Navigator.pop(context, rules),
+            icon: const Icon(Icons.save_outlined), label: const Text('Save')),
+        ],
+      ),
+    );
+    if (selected != null && mounted) {
+      await _perform(() => widget.onSave(category.copyWith(teamRules: selected)));
+    }
+  }
+
   @override
   void dispose() {
     _subscription?.cancel();
@@ -135,7 +161,7 @@ class _CompetitionCategoriesScreenState
                   ListTile(
                     contentPadding: EdgeInsets.zero,
                     leading: Icon(
-                      template == CompetitionTemplate.flagVoting
+                      template != CompetitionTemplate.points
                           ? Icons.flag_outlined
                           : Icons.scoreboard_outlined,
                     ),
@@ -168,6 +194,11 @@ class _CompetitionCategoriesScreenState
                           if (value != null) setState(() => _template = value);
                         },
                 ),
+                if (_template == CompetitionTemplate.flagTeams) ...[
+                  const SizedBox(height: 16),
+                  _TeamRulesEditor(initialRules: _teamRules,
+                    enabled: !_busy, onChanged: (rules) => _teamRules = rules),
+                ],
                 const SizedBox(height: 16),
                 Align(
                   alignment: Alignment.centerLeft,
@@ -190,7 +221,9 @@ class _CompetitionCategoriesScreenState
                     contentPadding: EdgeInsets.zero,
                     value: category.enabled,
                     title: Text(category.name),
-                    subtitle: Text(category.template.label),
+                    subtitle: Text(category.template == CompetitionTemplate.flagTeams
+                      ? '${category.template.label}\nMembers: ${category.teamRules.minimumMembers}-${category.teamRules.maximumMembers ?? 'None'}'
+                      : category.template.label),
                     onChanged: _busy
                         ? null
                         : (enabled) {
@@ -202,11 +235,15 @@ class _CompetitionCategoriesScreenState
                               );
                             }
                           },
-                    secondary: IconButton(
-                      tooltip: 'Remove ${category.name}',
-                      onPressed: _busy ? null : () => _removeCategory(category),
-                      icon: const Icon(Icons.delete_outline),
-                    ),
+                    secondary: Row(mainAxisSize: MainAxisSize.min, children: [
+                      if (category.template == CompetitionTemplate.flagTeams)
+                        IconButton(tooltip: 'Team rules for ${category.name}',
+                          onPressed: _busy ? null : () => _editTeamRules(category),
+                          icon: const Icon(Icons.settings_outlined)),
+                      IconButton(tooltip: 'Remove ${category.name}',
+                        onPressed: _busy ? null : () => _removeCategory(category),
+                        icon: const Icon(Icons.delete_outline)),
+                    ]),
                   ),
               ],
             ),
@@ -214,5 +251,80 @@ class _CompetitionCategoriesScreenState
         ),
       ),
     );
+  }
+}
+
+class _TeamRulesEditor extends StatefulWidget {
+  final TeamRules initialRules;
+  final bool enabled;
+  final void Function(TeamRules) onChanged;
+  const _TeamRulesEditor({required this.initialRules, required this.onChanged, this.enabled = true});
+
+  @override
+  State<_TeamRulesEditor> createState() => _TeamRulesEditorState();
+}
+
+class _TeamRulesEditorState extends State<_TeamRulesEditor> {
+  late final TextEditingController _minimum;
+  late final TextEditingController _maximum;
+  late bool _hasMaximum;
+  late bool _shared;
+  late bool _names;
+
+  @override
+  void initState() {
+    super.initState();
+    _minimum = TextEditingController(text: '${widget.initialRules.minimumMembers}');
+    _maximum = TextEditingController(text: widget.initialRules.maximumMembers?.toString() ?? '');
+    _hasMaximum = widget.initialRules.maximumMembers != null;
+    _shared = widget.initialRules.allowSharedMembers;
+    _names = widget.initialRules.allowNames;
+  }
+
+  void _changed() {
+    setState(() {});
+    widget.onChanged(TeamRules(
+      minimumMembers: int.tryParse(_minimum.text) ?? 0,
+      maximumMembers: _hasMaximum ? (int.tryParse(_maximum.text) ?? 0) : null,
+      allowSharedMembers: _shared, allowNames: _names,
+    ));
+  }
+
+  @override
+  void dispose() {
+    _minimum.dispose();
+    _maximum.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final minimum = int.tryParse(_minimum.text) ?? 0;
+    final maximum = int.tryParse(_maximum.text) ?? 0;
+    return Column(mainAxisSize: MainAxisSize.min, children: [
+      TextField(key: const ValueKey('team-minimum'), controller: _minimum,
+        enabled: widget.enabled, keyboardType: TextInputType.number,
+        decoration: InputDecoration(labelText: 'Minimum Members',
+          errorText: minimum < 1 ? 'Minimum must be at least 1.' : null),
+        onChanged: (_) => _changed()),
+      SwitchListTile(contentPadding: EdgeInsets.zero, title: const Text('Maximum Team Size'),
+        subtitle: !_hasMaximum ? const Text('None') : null, value: _hasMaximum,
+        onChanged: !widget.enabled ? null : (value) {
+          _hasMaximum = value;
+          if (value && _maximum.text.isEmpty) _maximum.text = '$minimum';
+          _changed();
+        }),
+      if (_hasMaximum) TextField(key: const ValueKey('team-maximum'), controller: _maximum,
+        enabled: widget.enabled, keyboardType: TextInputType.number,
+        decoration: InputDecoration(labelText: 'Maximum Members',
+          errorText: maximum < minimum ? 'Maximum must be at least the minimum.' : null),
+        onChanged: (_) => _changed()),
+      SwitchListTile(key: const ValueKey('team-shared-members'), contentPadding: EdgeInsets.zero,
+        title: const Text('Competitors May Join Multiple Teams'), value: _shared,
+        onChanged: !widget.enabled ? null : (value) { _shared = value; _changed(); }),
+      SwitchListTile(key: const ValueKey('team-allow-names'), contentPadding: EdgeInsets.zero,
+        title: const Text('Allow Team Names'), value: _names,
+        onChanged: !widget.enabled ? null : (value) { _names = value; _changed(); }),
+    ]);
   }
 }
