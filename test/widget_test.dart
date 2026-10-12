@@ -7,8 +7,10 @@
 
 import 'dart:async';
 import 'dart:isolate';
+import 'dart:ui' as ui;
 
 import 'package:archive/archive.dart';
+import 'package:screenshot/screenshot.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:flutter/foundation.dart';
@@ -99,6 +101,29 @@ Widget _drawSheet(List<Competitor> competitors) {
   );
 }
 
+Division _shortRepechageDivision(int entrantCount, {int flagsA = 3, int flagsB = 2}) {
+  final competitors = _competitors(entrantCount);
+  final records = entrantCount == 5 ? [
+    _matchRecord('match_1', 'Quarterfinal', competitors[0], competitors[1]),
+    _matchRecord('match_2', 'Semifinal', competitors[0], competitors[2]),
+    _matchRecord('match_3', 'Semifinal', competitors[3], competitors[4]),
+    _matchRecord('match_4', 'Final', competitors[0], competitors[3]),
+    _matchRecord('repechage_1', 'Repechage Round 1', competitors[2], competitors[1]),
+    _matchRecord('repechage_2', 'Repechage Round 2', competitors[1], competitors[4]),
+  ] : [
+    _matchRecord('match_1', 'Quarterfinal', competitors[0], competitors[1]),
+    _matchRecord('match_2', 'Quarterfinal', competitors[2], competitors[3]),
+    _matchRecord('match_3', 'Semifinal', competitors[0], competitors[4]),
+    _matchRecord('match_4', 'Semifinal', competitors[2], competitors[5]),
+    _matchRecord('match_5', 'Final', competitors[0], competitors[2]),
+    _matchRecord('repechage_1', 'Repechage Round 1', competitors[4], competitors[1]),
+    _matchRecord('repechage_2', 'Repechage Round 1', competitors[5], competitors[3]),
+  ];
+  return _divisionFor(competitors).copyWith(matchRecords: records.map((record) =>
+    DivisionMatchRecord.fromMap({...record.toMap(), 'competitorAFlags': flagsA,
+      'competitorBFlags': flagsB})).toList());
+}
+
 Widget _competitionExecution(
   List<Competitor> competitors,
   void Function(
@@ -134,6 +159,75 @@ Widget _competitionExecution(
 }
 
 void main() {
+  testWidgets('competitor registry header reflows without clipping on a phone', (tester) async {
+    tester.view.physicalSize = const Size(320, 800);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await tester.pumpWidget(MaterialApp(
+      home: CompetitorRegistrationScreen(
+        competitors: const [],
+        onSave: (_) async {},
+        onDelete: (_) async {},
+        onReplaceCompetitors: (_) async {},
+      ),
+    ));
+    await tester.pumpAndSettle();
+
+    final title = tester.getRect(find.text('Competitor Registry'));
+    expect(title.width, greaterThan(180));
+    expect(find.text('Import XLSX'), findsOneWidget);
+    expect(find.text('Create XLSX'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('exported small repechage finalists align with the feeder midpoint', (tester) async {
+    for (final entrantCount in [5, 6]) {
+    final competitors = _competitors(entrantCount);
+    final division = _shortRepechageDivision(entrantCount, flagsA: 0, flagsB: 5);
+    await tester.pumpWidget(const MaterialApp(home: SizedBox()));
+    final png = await tester.runAsync(() => ScreenshotController().captureFromWidget(
+      MediaQuery(data: const MediaQueryData(size: Size(1100, 1800)),
+        child: Directionality(textDirection: TextDirection.ltr,
+          child: Theme(data: ThemeData(), child: Material(child: SizedBox(width: 1100, height: 1800,
+            child: DrawSheetContent(division: division, competitors: competitors, printFriendly: true)))))),
+      targetSize: const Size(1100, 1800), pixelRatio: 1,
+    ));
+    final pixels = await tester.runAsync(() async {
+      final codec = await ui.instantiateImageCodec(png!);
+      final frame = await codec.getNextFrame();
+      final data = await frame.image.toByteData(format: ui.ImageByteFormat.rawRgba);
+      final result = (bytes: data!.buffer.asUint8List(), width: frame.image.width, height: frame.image.height);
+      frame.image.dispose();
+      codec.dispose();
+      return result;
+    });
+    List<double> connectorCenters(int column) {
+      final rows = <double>[];
+      int? start;
+      for (var row = 0; row <= pixels!.height; row++) {
+        final offset = (row * pixels.width + column) * 4;
+        final connector = row < pixels.height && pixels.bytes[offset] < 200 &&
+            pixels.bytes[offset + 2] > pixels.bytes[offset] + 6 &&
+            pixels.bytes[offset + 1] >= pixels.bytes[offset];
+        if (connector && start == null) start = row;
+        if (!connector && start != null) {
+          rows.add((start + row - 1) / 2);
+          start = null;
+        }
+      }
+      return rows;
+    }
+    final feeders = connectorCenters(190);
+    final finalists = connectorCenters(366);
+    expect(feeders.length, greaterThanOrEqualTo(2));
+    expect(finalists, isNotEmpty);
+    final midpoint = (feeders[feeders.length - 2] + feeders.last) / 2;
+    expect(finalists.last, closeTo(midpoint, 1), reason: '$entrantCount entrants');
+    }
+  });
+
   testWidgets('points warning counts fit a narrow mobile screen', (tester) async {
     tester.view.physicalSize = const Size(320, 800);
     tester.view.devicePixelRatio = 1;
@@ -203,34 +297,15 @@ void main() {
   testWidgets('short repechage finalists are centered between the feeder matches', (tester) async {
     for (final entrantCount in [5, 6]) {
       final competitors = _competitors(entrantCount);
-      final records = entrantCount == 5 ? [
-        _matchRecord('match_1', 'Quarterfinal', competitors[0], competitors[1]),
-        _matchRecord('match_2', 'Semifinal', competitors[0], competitors[2]),
-        _matchRecord('match_3', 'Semifinal', competitors[3], competitors[4]),
-        _matchRecord('match_4', 'Final', competitors[0], competitors[3]),
-        _matchRecord('repechage_1', 'Repechage Round 1', competitors[2], competitors[1]),
-        _matchRecord('repechage_2', 'Repechage Round 2', competitors[1], competitors[4]),
-      ] : [
-        _matchRecord('match_1', 'Quarterfinal', competitors[0], competitors[1]),
-        _matchRecord('match_2', 'Quarterfinal', competitors[2], competitors[3]),
-        _matchRecord('match_3', 'Semifinal', competitors[0], competitors[4]),
-        _matchRecord('match_4', 'Semifinal', competitors[2], competitors[5]),
-        _matchRecord('match_5', 'Final', competitors[0], competitors[2]),
-        _matchRecord('repechage_1', 'Repechage Round 1', competitors[4], competitors[1]),
-        _matchRecord('repechage_2', 'Repechage Round 1', competitors[5], competitors[3]),
-      ];
-      final division = _divisionFor(competitors).copyWith(matchRecords: records.map((record) =>
-        DivisionMatchRecord.fromMap({...record.toMap(), 'competitorAFlags': 3, 'competitorBFlags': 2})).toList());
+      final division = _shortRepechageDivision(entrantCount);
       for (final printFriendly in [false, true]) {
       await tester.pumpWidget(MaterialApp(home: Scaffold(body: DrawSheetContent(
         division: division, competitors: competitors, printFriendly: printFriendly,
       ))));
       await tester.pumpAndSettle();
-      final feeder = find.byKey(const ValueKey('Repechage-round-0'));
-      final finalColumn = find.byKey(const ValueKey('Repechage-round-1'));
-      final first = find.descendant(of: feeder, matching: find.byKey(const ValueKey('round-match-0')));
-      final second = find.descendant(of: feeder, matching: find.byKey(const ValueKey('round-match-1')));
-      final finalMatch = find.descendant(of: finalColumn, matching: find.byKey(const ValueKey('round-match-0')));
+      final first = find.byKey(const ValueKey('small-repechage-feeder-0'));
+      final second = find.byKey(const ValueKey('small-repechage-feeder-1'));
+      final finalMatch = find.byKey(const ValueKey('small-repechage-finalists'));
       final midpoint = (tester.getCenter(first).dy + tester.getCenter(second).dy) / 2;
       expect(tester.getCenter(finalMatch).dy, closeTo(midpoint, 0.5), reason: '$entrantCount entrants');
       expect(tester.takeException(), isNull);

@@ -1,0 +1,17 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "Analyze responsive registration UI",
+			"type": "shell",
+			"command": "C:\\Users\\jovan\\flutter\\bin\\flutter.bat",
+			"args": [
+				"analyze",
+				"--no-fatal-infos",
+				"lib"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		}
+	]
+}

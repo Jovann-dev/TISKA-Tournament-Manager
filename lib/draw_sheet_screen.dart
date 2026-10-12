@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 
 import 'tournament_local_store.dart';
 import 'tournament_models.dart';
@@ -449,20 +450,8 @@ class _BracketPanel extends StatelessWidget {
     const columnWidth = 160.0;
     final centerFinalists = title == 'Repechage' && rounds.length == 2 &&
         rounds.first.matches.length == 2 && rounds.last.displayLabel == 'Finalists';
-    double? headerHeight;
-    if (centerFinalists) {
-      for (final round in rounds) {
-        final painter = TextPainter(
-          text: TextSpan(text: round.displayLabel,
-            style: DefaultTextStyle.of(context).style.merge(Theme.of(context).textTheme.titleSmall)),
-          textDirection: Directionality.of(context), textScaler: MediaQuery.textScalerOf(context),
-        )..layout(maxWidth: columnWidth);
-        if (painter.height > (headerHeight ?? 0)) headerHeight = painter.height;
-        painter.dispose();
-      }
-    }
     final roundColumns = Row(
-      crossAxisAlignment: centerFinalists ? CrossAxisAlignment.stretch : CrossAxisAlignment.start,
+      crossAxisAlignment: CrossAxisAlignment.start,
       children: List<Widget>.generate(rounds.length, (index) {
         final round = rounds[index];
         return Padding(
@@ -471,9 +460,7 @@ class _BracketPanel extends StatelessWidget {
             key: ValueKey('$title-round-$index'), width: columnWidth,
             child: _RoundColumn(
               round: round, compact: false,
-              centerMatch: centerFinalists && index == 1,
-              headerHeight: headerHeight,
-              topInset: centerFinalists ? _topInsetFor(0) : _topInsetFor(index) +
+              topInset: _topInsetFor(index) +
                   (index > 0 && rounds[index - 1].loserArrowAfterIndex != null ? 14 : 0),
               matchGap: _matchGapFor(index),
             ),
@@ -503,7 +490,18 @@ class _BracketPanel extends StatelessWidget {
                 children: [
                   Text(title, style: Theme.of(context).textTheme.titleLarge),
                   const SizedBox(height: 10),
-                  centerFinalists ? IntrinsicHeight(child: roundColumns) : roundColumns,
+                  centerFinalists ? _SmallRepechageLayout(
+                    topInset: _topInsetFor(0), matchGap: _matchGapFor(0),
+                    hasLoserArrow: rounds.first.loserArrowAfterIndex == 0,
+                    children: [
+                      Text(rounds.first.displayLabel, style: Theme.of(context).textTheme.titleSmall),
+                      Text(rounds.last.displayLabel, style: Theme.of(context).textTheme.titleSmall),
+                      _roundMatchTile(rounds.first.matches[0], false, const ValueKey('small-repechage-feeder-0')),
+                      _roundMatchTile(rounds.first.matches[1], false, const ValueKey('small-repechage-feeder-1')),
+                      _roundMatchTile(rounds.last.matches.single, false, const ValueKey('small-repechage-finalists')),
+                      if (rounds.first.loserArrowAfterIndex == 0) const _LoserFeedArrow(),
+                    ],
+                  ) : roundColumns,
                 ],
               ),
       ),
@@ -531,21 +529,111 @@ class _BracketPanel extends StatelessWidget {
   }
 }
 
+class _SmallRepechageLayout extends MultiChildRenderObjectWidget {
+  final double topInset;
+  final double matchGap;
+  final bool hasLoserArrow;
+
+  const _SmallRepechageLayout({required this.topInset, required this.matchGap,
+    required this.hasLoserArrow, required super.children});
+
+  @override
+  RenderObject createRenderObject(BuildContext context) =>
+      _RenderSmallRepechage(topInset, matchGap, hasLoserArrow);
+
+  @override
+  void updateRenderObject(BuildContext context, _RenderSmallRepechage renderObject) {
+    renderObject.updateGeometry(topInset, matchGap, hasLoserArrow);
+  }
+}
+
+class _RepechageParentData extends ContainerBoxParentData<RenderBox> {}
+
+class _RenderSmallRepechage extends RenderBox
+    with ContainerRenderObjectMixin<RenderBox, _RepechageParentData>,
+         RenderBoxContainerDefaultsMixin<RenderBox, _RepechageParentData> {
+  static const _columnWidth = 160.0;
+  static const _columnGap = 16.0;
+  double _topInset;
+  double _matchGap;
+  bool _hasLoserArrow;
+
+  _RenderSmallRepechage(this._topInset, this._matchGap, this._hasLoserArrow);
+
+  void updateGeometry(double topInset, double matchGap, bool hasLoserArrow) {
+    if (_topInset == topInset && _matchGap == matchGap && _hasLoserArrow == hasLoserArrow) return;
+    _topInset = topInset;
+    _matchGap = matchGap;
+    _hasLoserArrow = hasLoserArrow;
+    markNeedsLayout();
+  }
+
+  @override
+  void setupParentData(RenderBox child) {
+    if (child.parentData is! _RepechageParentData) child.parentData = _RepechageParentData();
+  }
+
+  List<Offset> _positions(List<Size> sizes) {
+    final headingHeight = sizes[0].height > sizes[1].height ? sizes[0].height : sizes[1].height;
+    final firstTop = headingHeight + _topInset;
+    final secondTop = firstTop + sizes[2].height + _matchGap +
+        (_hasLoserArrow ? sizes[5].height + 28 : 0);
+    final midpoint = (firstTop + sizes[2].height / 2 + secondTop + sizes[3].height / 2) / 2;
+    return [
+      Offset.zero, const Offset(_columnWidth + _columnGap, 0),
+      Offset(0, firstTop), Offset(0, secondTop),
+      Offset(_columnWidth + _columnGap, midpoint - sizes[4].height / 2),
+      if (_hasLoserArrow) Offset(0, firstTop + sizes[2].height),
+    ];
+  }
+
+  Size _layoutSize(List<Size> sizes, List<Offset> positions, BoxConstraints constraints) {
+    final feederBottom = positions[3].dy + sizes[3].height;
+    final finalistsBottom = positions[4].dy + sizes[4].height;
+    return constraints.constrain(Size(_columnWidth * 2 + _columnGap,
+        feederBottom > finalistsBottom ? feederBottom : finalistsBottom));
+  }
+
+  @override
+  void performLayout() {
+    final children = getChildrenAsList();
+    for (final child in children) {
+      child.layout(const BoxConstraints.tightFor(width: _columnWidth), parentUsesSize: true);
+    }
+    final sizes = children.map((child) => child.size).toList();
+    final positions = _positions(sizes);
+    size = _layoutSize(sizes, positions, constraints);
+    for (var index = 0; index < children.length; index++) {
+      (children[index].parentData! as _RepechageParentData).offset = positions[index];
+    }
+  }
+
+  @override
+  Size computeDryLayout(BoxConstraints constraints) {
+    final sizes = getChildrenAsList().map((child) => child.getDryLayout(
+        const BoxConstraints.tightFor(width: _columnWidth))).toList();
+    return _layoutSize(sizes, _positions(sizes), constraints);
+  }
+
+  @override
+  void paint(PaintingContext context, Offset offset) => defaultPaint(context, offset);
+
+  @override
+  bool hitTestChildren(BoxHitTestResult result, {required Offset position}) =>
+      defaultHitTestChildren(result, position: position);
+}
+
 class _RoundColumn extends StatelessWidget {
   final _RoundData round;
   final bool compact;
   final double topInset;
   final double matchGap;
-  final bool centerMatch;
-  final double? headerHeight;
 
   const _RoundColumn({
     required this.round,
     required this.compact,
     required this.topInset,
     required this.matchGap,
-    this.centerMatch = false,
-    this.headerHeight,
   });
 
   @override
@@ -553,11 +641,8 @@ class _RoundColumn extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        SizedBox(height: headerHeight,
-          child: Text(round.displayLabel, style: Theme.of(context).textTheme.titleSmall)),
+        Text(round.displayLabel, style: Theme.of(context).textTheme.titleSmall),
         SizedBox(height: topInset),
-        if (centerMatch) Expanded(child: Center(child: _matchTile(round.matches.single, 0)))
-        else
         ...List<Widget>.generate(round.matches.length, (index) {
           final match = round.matches[index];
           final showLoserArrow = round.loserArrowAfterIndex == index;
@@ -569,7 +654,7 @@ class _RoundColumn extends StatelessWidget {
             ),
             child: Column(
               children: [
-                _matchTile(match, index),
+                _roundMatchTile(match, compact, ValueKey('round-match-$index')),
                 if (showLoserArrow) const _LoserFeedArrow(),
               ],
             ),
@@ -579,14 +664,15 @@ class _RoundColumn extends StatelessWidget {
     );
   }
 
-  Widget _matchTile(_MatchData match, int index) => _MatchTile(
-    key: ValueKey('round-match-$index'),
+}
+
+Widget _roundMatchTile(_MatchData match, bool compact, Key key) => _MatchTile(
+    key: key,
     competitorANumber: match.competitorANumber, competitorBNumber: match.competitorBNumber,
     topMarker: match.topMarker, bottomMarker: match.bottomMarker,
     competitorASubscript: match.competitorASubscript, competitorBSubscript: match.competitorBSubscript,
     details: match.details, compact: compact,
   );
-}
 
 class _LoserFeedArrow extends StatelessWidget {
   const _LoserFeedArrow();

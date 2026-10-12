@@ -397,6 +397,74 @@ class _CompetitorRegistrationScreenState
         .showSnackBar(SnackBar(content: Text(message)));
   }
 
+  Widget _registryHeader(BuildContext context, double availableWidth) {
+    final title = Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Icon(Icons.badge_outlined, size: 28),
+        const SizedBox(width: 12),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('Competitor Registry', style: Theme.of(context).textTheme.titleLarge),
+              const SizedBox(height: 2),
+              Text('Total competitors: ${widget.competitors.length}',
+                  style: Theme.of(context).textTheme.bodyMedium),
+            ],
+          ),
+        ),
+      ],
+    );
+    final importButton = OutlinedButton.icon(
+      onPressed: isSubmitting ? null : _importXlsx,
+      icon: const Icon(Icons.upload_file),
+      label: const Text('Import XLSX'),
+    );
+    final createButton = OutlinedButton.icon(
+      onPressed: isSubmitting ? null : _createXlsxForRegistrations,
+      icon: const Icon(Icons.description),
+      label: const Text('Create XLSX'),
+    );
+
+    if (availableWidth < 560) {
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          title,
+          const SizedBox(height: 12),
+          importButton,
+          const SizedBox(height: 8),
+          createButton,
+          if (isSubmitting) ...[
+            const SizedBox(height: 12),
+            const Center(child: CircularProgressIndicator(strokeWidth: 2)),
+          ],
+        ],
+      );
+    }
+
+    return Row(
+      children: [
+        Expanded(child: title),
+        const SizedBox(width: 12),
+        Flexible(
+          child: Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            alignment: WrapAlignment.end,
+            children: [importButton, createButton],
+          ),
+        ),
+        if (isSubmitting) ...[
+          const SizedBox(width: 12),
+          const SizedBox(width: 24, height: 24,
+              child: CircularProgressIndicator(strokeWidth: 2)),
+        ],
+      ],
+    );
+  }
+
   @override
   void dispose() {
     numberController.dispose();
@@ -421,53 +489,9 @@ class _CompetitorRegistrationScreenState
                 Card(
                   child: Padding(
                     padding: const EdgeInsets.all(16),
-                    child: Row(
-                      children: [
-                        const Icon(Icons.badge_outlined, size: 28),
-                        const SizedBox(width: 12),
-                        Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(
-                                'Competitor Registry',
-                                style: Theme.of(context).textTheme.titleLarge,
-                              ),
-                              const SizedBox(height: 2),
-                              Text(
-                                'Total competitors: ${widget.competitors.length}',
-                                style: Theme.of(context).textTheme.bodyMedium,
-                              ),
-                            ],
-                          ),
-                        ),
-                        Wrap(
-                          spacing: 8,
-                          runSpacing: 8,
-                          alignment: WrapAlignment.end,
-                          children: [
-                            OutlinedButton.icon(
-                              onPressed: isSubmitting ? null : _importXlsx,
-                              icon: const Icon(Icons.upload_file),
-                              label: const Text('Import XLSX'),
-                            ),
-                            OutlinedButton.icon(
-                              onPressed: isSubmitting
-                                  ? null
-                                  : _createXlsxForRegistrations,
-                              icon: const Icon(Icons.description),
-                              label: const Text('Create XLSX'),
-                            ),
-                          ],
-                        ),
-                        const SizedBox(width: 8),
-                        if (isSubmitting)
-                          const SizedBox(
-                            width: 24,
-                            height: 24,
-                            child: CircularProgressIndicator(strokeWidth: 2),
-                          ),
-                      ],
+                    child: LayoutBuilder(
+                      builder: (context, constraints) =>
+                          _registryHeader(context, constraints.maxWidth),
                     ),
                   ),
                 ),
@@ -503,6 +527,7 @@ class _CompetitorRegistrationScreenState
                         const SizedBox(height: 12),
                         DropdownButtonFormField<String>(
                           initialValue: selectedBelt,
+                          isExpanded: true,
                           decoration: const InputDecoration(
                             labelText: 'Belt',
                             border: OutlineInputBorder(),
@@ -532,6 +557,7 @@ class _CompetitorRegistrationScreenState
                           const SizedBox(height: 12),
                           DropdownButtonFormField<String>(
                             initialValue: selectedKiddiesBelt,
+                            isExpanded: true,
                             decoration: const InputDecoration(
                               labelText: 'Kiddies Belt Color',
                               helperText: 'Select the competitor’s belt color.',
@@ -559,6 +585,7 @@ class _CompetitorRegistrationScreenState
                         const SizedBox(height: 12),
                         DropdownButtonFormField<Gender>(
                           initialValue: selectedGender,
+                          isExpanded: true,
                           decoration: const InputDecoration(
                             labelText: 'Gender',
                             border: OutlineInputBorder(),
@@ -602,7 +629,10 @@ class _CompetitorRegistrationScreenState
                           ),
                         ),
                         const SizedBox(height: 16),
-                        Row(
+                        Wrap(
+                          spacing: 12,
+                          runSpacing: 8,
+                          crossAxisAlignment: WrapCrossAlignment.center,
                           children: [
                             ElevatedButton(
                               onPressed: isSubmitting ? null : saveCompetitor,
@@ -612,7 +642,6 @@ class _CompetitorRegistrationScreenState
                                     : 'Add Competitor',
                               ),
                             ),
-                            const SizedBox(width: 12),
                             TextButton(
                               onPressed: isEditing && !isSubmitting
                                   ? () => setState(_resetForm)
